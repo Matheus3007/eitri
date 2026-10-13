@@ -63,8 +63,8 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   continuous in the parameters; corner-by-corner fillets are not (they flip as a cut sweeps past a corner)
   and broke the Newton. `BalanceError` messages say which way the outline is off (tooth-heavy / too heavy /
   lobe hits a waist). ~2 s per build. The arm slot has its own `arm_fillet_mm`; if a requested slot can't
-  fit (walls + fillets wider than the arm) `style_arm_slot` fails -- the optimizer otherwise drops it
-  silently, since a solid arm scores a few J better.
+  fit (walls + fillets wider than the arm) `style_arm_slot` fails -- without it the optimizer drifted into
+  slot-less designs (thick arm walls + big fillets), with no energy gain to show for it.
 - FEA (CalculiX plane stress, CPS6): `centrifugal` (3 tangential bore constraints) and `impact`
   (contact force on the outer `bite` of the face as consistent nodal loads, torque reacted by d'Alembert
   inertial loads, net force by the bolt holes). Stress split into zones: `contact` (tooth-tip denting,
