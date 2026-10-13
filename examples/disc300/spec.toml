@@ -1,0 +1,57 @@
+# 300 mm featherweight disc, optimized for stored energy under a 4.5 kg weapon budget.
+name = "disc300"
+
+[weapon]
+type = "disc"
+spin = "ccw"
+
+[material]
+candidates = ["AR500", "S7", "4340"]
+
+[drive]
+motor = { kv = 190, voltage = 44.4, resistance_ohm = 0.04, current_limit_a = 150 }
+ratio = 1.0             # motor turns per weapon turn (direct drive) -> ~7600 rpm
+
+[context]
+closing_speed_mps = 3.0
+opponent_mass_kg = 13.6
+restitution = 0.2
+contact_time_ms = 2.0
+
+[constraints]
+mass_kg = { max = 4.5 }
+min_safety_factor = 2.0
+min_impact_safety_factor = 1.0
+max_spinup_s = 5.0
+max_imbalance_gmm = 20
+min_ligament_mm = 6
+
+[objective]
+maximize = "energy"
+
+[style]                 # looks are a hard constraint: aggressive and well made
+min_hook_deg = 5
+max_root_fillet_ratio = 0.4
+min_pocket_sweep_deg = 15
+
+[design]
+od_mm = 300
+thickness_mm = [8, 16]
+n_teeth = 2
+tooth_height_mm = [12, 40]
+hook_deg = [-5, 20]
+root_fillet_mm = [2, 20]
+land_deg = [3, 15]
+ramp_deg = [40, 120]
+bore_mm = 25.4
+bolt_count = 6
+bolt_d_mm = 6.6
+bolt_pcd_mm = 50
+pocket_style = "swept"
+pockets_per_tooth = 2
+pocket_phase_deg = [-70, -20]
+pocket_r_in_mm = [40, 70]
+pocket_r_out_mm = [80, 115]
+pocket_span_deg = [20, 60]
+pocket_sweep_deg = [0, 40]
+pocket_fillet_mm = 6

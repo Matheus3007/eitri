@@ -1,0 +1,54 @@
+# 300 mm asymmetric fang bar for a featherweight, optimized for stored energy.
+name = "fang300"
+
+[weapon]
+type = "fang"
+spin = "ccw"
+
+[material]
+candidates = ["AR500", "S7", "4340"]
+
+[drive]
+motor = { kv = 190, voltage = 44.4, resistance_ohm = 0.04, current_limit_a = 150 }
+ratio = 1.0             # direct drive -> ~7600 rpm
+
+[context]
+closing_speed_mps = 3.0
+opponent_mass_kg = 13.6
+restitution = 0.2
+contact_time_ms = 2.0
+
+[constraints]
+mass_kg = { max = 4.5 }
+min_safety_factor = 2.0
+min_impact_safety_factor = 1.0
+max_spinup_s = 5.0
+max_imbalance_gmm = 20
+min_ligament_mm = 6
+
+[objective]
+maximize = "energy"
+
+[style]
+min_hook_deg = 5
+max_root_fillet_ratio = 0.4
+
+[design]
+od_mm = 300
+thickness_mm = [10, 30]
+hub_d_mm = 90
+face_depth_mm = [20, 40]
+hook_deg = [5, 20]
+root_fillet_mm = [3, 10]
+land_deg = [4, 16]
+arm_root_width_mm = [35, 60]
+arm_sweep_deg = [20, 70]
+arm_curve = [1.5, 3.5]
+blend_mm = 12
+cw_radius_mm = [100, 120]
+cw_sweep_deg = [10, 45]
+cw_root_width_mm = [60, 82]
+bore_mm = 25.4
+bolt_count = 6
+bolt_d_mm = 6.6
+bolt_pcd_mm = 50

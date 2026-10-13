@@ -1,0 +1,47 @@
+name = "demo"
+
+[weapon]
+type = "disc"
+spin = "ccw"            # seen from +Z; teeth face the spin direction
+
+[material]
+name = "AR500"          # or: candidates = ["AR500", "S7", "4340"]  (see `eitri materials`)
+
+[drive]
+rpm = 8000              # weapon rpm, or replace with a motor:
+# motor = { kv = 190, voltage = 44.4, resistance_ohm = 0.03, current_limit_a = 150 }
+# ratio = 1.0           # motor turns per weapon turn
+
+[context]               # the fight you design for
+closing_speed_mps = 3.0
+opponent_mass_kg = 13.6
+restitution = 0.2
+contact_time_ms = 2.0   # hit pulse duration; impact results scale with it
+
+[constraints]
+mass_kg = { max = 4.5 }
+min_safety_factor = 2.0       # spinning, no hit
+min_impact_safety_factor = 1.0  # tooth/body must not yield under the estimated peak hit
+max_imbalance_gmm = 20
+min_ligament_mm = 5
+# max_spinup_s = 3.0
+
+[objective]
+maximize = "energy"     # energy | moi | effective_mass
+
+[design]                # number = fixed, [min, max] = free for the optimizer (eval uses the midpoint)
+od_mm = 300
+thickness_mm = 12
+n_teeth = 2
+tooth_height_mm = 20
+hook_deg = 0
+land_deg = 8
+ramp_deg = 90
+bore_mm = 25.4
+bolt_count = 6
+bolt_d_mm = 6.6
+bolt_pcd_mm = 50
+pocket_count = 5
+pocket_d_mm = 30
+pocket_pcd_mm = 120
+pocket_phase_deg = 0

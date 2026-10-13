@@ -1,0 +1,46 @@
+# Typical properties for weapon steels. Units: E/strength in MPa, density in kg/m^3, charpy in J (V-notch, room temp).
+# These are representative datasheet values for the stated heat treatment; verify against your supplier's certs.
+
+[AR500]
+description = "Abrasion-resistant plate, through-hardened 477-534 HB, as supplied (no heat treat needed)"
+density = 7850
+E = 200000
+nu = 0.29
+yield = 1250
+uts = 1640
+elongation_pct = 10
+charpy_j = 27
+hardness = "477-534 HB (~50 HRC)"
+
+[S7]
+description = "Shock-resisting tool steel, hardened and tempered to 54-56 HRC"
+density = 7830
+E = 207000
+nu = 0.29
+yield = 1550
+uts = 1930
+elongation_pct = 7
+charpy_j = 30
+hardness = "54-56 HRC"
+
+[4340]
+description = "Ni-Cr-Mo alloy steel, quenched and tempered to 38-42 HRC (tough, common for weapons)"
+density = 7850
+E = 205000
+nu = 0.29
+yield = 1170
+uts = 1280
+elongation_pct = 13
+charpy_j = 50
+hardness = "38-42 HRC"
+
+["4340_HRC50"]
+description = "4340 quenched and tempered to ~50 HRC (stronger, less tough)"
+density = 7850
+E = 205000
+nu = 0.29
+yield = 1500
+uts = 1790
+elongation_pct = 10
+charpy_j = 20
+hardness = "48-51 HRC"

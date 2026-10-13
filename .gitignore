@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+# Weapon projects are the user's work: kept local, never pushed. Reference specs live in examples/.
+projects/
+examples/*/runs/

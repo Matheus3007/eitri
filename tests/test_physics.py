@@ -1,0 +1,97 @@
+"""Physics regression tests against closed-form solutions."""
+
+import math
+
+import build123d as bd
+import pytest
+
+from eitri.evaluate import evaluate, lame_bore_hoop_mpa
+from eitri.physics import drive, impact
+from eitri.physics.mass import mass_props
+from eitri.spec import Context, Drive
+
+RHO = 7850.0
+
+
+def test_solid_disc_moi():
+    r, t = 0.15, 0.012
+    mp = mass_props(bd.Cylinder(r * 1e3, t * 1e3), RHO)
+    m = RHO * math.pi * r**2 * t
+    assert mp.mass_kg == pytest.approx(m, rel=1e-6)
+    assert mp.moi_kgm2 == pytest.approx(0.5 * m * r**2, rel=1e-3)
+
+
+def test_annulus_moi():
+    r1, r2, t = 0.02, 0.1, 0.01
+    ring = bd.Cylinder(r2 * 1e3, t * 1e3) - bd.Cylinder(r1 * 1e3, t * 1e3)
+    mp = mass_props(ring, RHO)
+    m = RHO * math.pi * (r2**2 - r1**2) * t
+    assert mp.moi_kgm2 == pytest.approx(0.5 * m * (r1**2 + r2**2), rel=1e-3)
+
+
+def test_offset_mass_gives_imbalance_and_parallel_axis():
+    s = bd.Pos(50, 0, 0) * bd.Cylinder(10, 10)
+    mp = mass_props(s, RHO)
+    assert mp.cg_offset_mm == pytest.approx(50, rel=1e-6)
+    assert mp.static_imbalance_gmm == pytest.approx(mp.mass_kg * 1e3 * 50, rel=1e-6)
+    i_cg = 0.5 * mp.mass_kg * 0.01**2
+    assert mp.moi_kgm2 == pytest.approx(i_cg + mp.mass_kg * 0.05**2, rel=1e-6)
+
+
+def test_symmetric_disc_is_balanced(spec):
+    r = evaluate(spec)
+    assert r["mass"]["static_imbalance_gmm"] < 0.1
+
+
+def test_single_tooth_disc_is_flagged_unbalanced(spec):
+    r = evaluate(spec, design={**spec.fixed_design(), "n_teeth": 1, "ramp_deg": 200})
+    assert "imbalance" in r["failed"]
+
+
+def test_spinup_matches_rc_exponential():
+    # No current limit, efficiency 1 -> w(t) = w0 (1 - exp(-t/tau)), tau = J R / Kt^2 (ratio 1)
+    kv, v, R, J = 200.0, 40.0, 0.05, 0.05
+    d = Drive(motor=dict(kv=kv, voltage=v, resistance_ohm=R, speed_efficiency=1.0))
+    res = drive.simulate(d, J)
+    kt = 60 / (2 * math.pi * kv)
+    tau = J * R / kt**2
+    assert res.spinup_s_90 == pytest.approx(tau * math.log(10), rel=1e-3)
+    assert res.top_rpm == pytest.approx(kv * v, rel=1e-9)
+
+
+def test_spinup_current_limited_is_linear():
+    # Pure current limit -> constant torque -> w(t) = (Kt I / J) t
+    kv, v, I, J, ratio = 200.0, 40.0, 100.0, 0.05, 2.0
+    d = Drive(motor=dict(kv=kv, voltage=v, current_limit_a=I, speed_efficiency=1.0), ratio=ratio)
+    res = drive.simulate(d, J)
+    kt = 60 / (2 * math.pi * kv)
+    w_top = kv * v * 2 * math.pi / 60 / ratio
+    assert res.spinup_s_90 == pytest.approx(0.9 * w_top * J / (ratio * kt * I), rel=1e-3)
+
+
+def test_impact_limits():
+    ctx = Context(opponent_mass_kg=1e9, restitution=0.0)
+    hit = impact.analyze(0.05, 800.0, 150.0, 2, 20.0, 0.0, ctx)
+    # infinitely heavy opponent, plastic: tooth stops, all weapon energy is lost
+    assert hit.weapon_speed_drop_pct == pytest.approx(100, rel=1e-6)
+    assert hit.weapon_energy_lost_j == pytest.approx(hit.energy_j, rel=1e-6)
+    assert hit.effective_mass_kg == pytest.approx(0.05 / 0.15**2)
+
+
+def test_bite_is_capped_by_tooth_height():
+    ctx = Context(closing_speed_mps=50.0)
+    hit = impact.analyze(0.05, 100.0, 150.0, 2, 20.0, 0.0, ctx)
+    assert hit.bite_kinematic_mm > 20 and hit.bite_mm == 20
+
+
+def test_lame_solid_disc_center_stress():
+    # Solid disc (a -> 0): sigma_max = (3+nu)/8 rho w^2 b^2 ; with a tiny hole it doubles (stress concentration)
+    nu, w, b = 0.29, 800.0, 150.0
+    hole = lame_bore_hoop_mpa(RHO, nu, w, 1e-6, b)
+    solid = (3 + nu) / 8 * RHO * w**2 * (b * 1e-3) ** 2 * 1e-6
+    assert hole == pytest.approx(2 * solid, rel=1e-6)
+
+
+def test_invalid_design_reports_error_instead_of_crashing(spec):
+    r = evaluate(spec, design={**spec.fixed_design(), "n_teeth": 4, "ramp_deg": 85, "land_deg": 10})
+    assert r["ok"] is False and "error" in r
