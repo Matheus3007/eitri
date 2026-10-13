@@ -111,3 +111,23 @@ def edges_on_segment(mesh: Mesh2D, a, b, tol: float = 1e-3) -> list[tuple[int, i
             if on[n1 - 1] and on[n2 - 1] and on[nm - 1]:
                 out.append((ei + 1, 3 + k))
     return out
+
+
+def boundary_normals(mesh: Mesh2D) -> dict[int, np.ndarray]:
+    """Outward unit normal at every boundary node (node id -> (nx, ny)), averaged over its boundary edges."""
+    e = mesh.edges().reshape(-1, 3)
+    key = np.sort(e[:, :2], axis=1)
+    _, inv, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    owner = np.repeat(np.arange(len(mesh.elems)), 3)
+    acc: dict[int, np.ndarray] = {}
+    xy = mesh.nodes
+    for i in np.nonzero(counts[inv.ravel()] == 1)[0]:
+        a, b, m = e[i]
+        d = xy[b - 1] - xy[a - 1]
+        nrm = np.array([d[1], -d[0]]) / np.linalg.norm(d)
+        centroid = xy[mesh.elems[owner[i], :3] - 1].mean(axis=0)
+        if nrm @ (centroid - (xy[a - 1] + xy[b - 1]) / 2) > 0:
+            nrm = -nrm  # point away from the material
+        for n in (a, b, m):
+            acc[int(n)] = acc.get(int(n), 0) + nrm
+    return {n: v / np.linalg.norm(v) for n, v in acc.items() if np.linalg.norm(v) > 1e-9}

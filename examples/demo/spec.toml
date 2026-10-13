@@ -22,7 +22,7 @@ contact_time_ms = 2.0   # hit pulse duration; impact results scale with it
 mass_kg = { max = 4.5 }
 min_safety_factor = 2.0       # spinning, no hit
 min_impact_safety_factor = 1.0  # tooth/body must not yield under the estimated peak hit
-max_imbalance_gmm = 20
+max_imbalance_gmm = 0.1     # CG dead on the axis (every generator solves its balance by Newton)
 min_ligament_mm = 5
 # max_spinup_s = 3.0
 

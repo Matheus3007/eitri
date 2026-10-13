@@ -35,13 +35,13 @@ rpm = 8000              # weapon rpm, or replace with a motor:
 closing_speed_mps = 3.0
 opponent_mass_kg = 13.6
 restitution = 0.2
-contact_time_ms = 0.71  # hit pulse; calibrated so a proven weapon (Rebot V3) sits at impact SF 1
+contact_time_ms = 0.67  # hit pulse; calibrated so a proven weapon (Rebot V3) sits at impact SF 1
 
 [constraints]
 mass_kg = {{ max = 4.5 }}
 min_safety_factor = 2.0       # spinning, no hit
 min_impact_safety_factor = 1.0  # tooth/body must not yield under the estimated peak hit
-max_imbalance_gmm = 20
+max_imbalance_gmm = 0.1     # CG dead on the axis (every generator solves its balance by Newton)
 min_ligament_mm = 5
 # max_spinup_s = 3.0
 
@@ -212,12 +212,25 @@ def _write_outputs(run: Path | None, spec: spec_mod.Spec, spec_path: Path, resul
         render.spinup_png(r, run / f"spinup_{tag}.png")
         render.stress_png(r, run / f"stress_{tag}.png", materials.get(tag).yield_)
     good = next((r for r in results if "error" not in r), None)
+    if good and good.get("reference_profile") and spec.reference is not None:
+        out["compare"] = _write_compare(run, spec.reference, [(spec.name, good)])
     if good:
         out["step_export"] = export_step_verified(good["_solid"], run / "weapon.step", good["_weapon"].plate())
         (run / "spec_fixed.toml").write_text(fixed_spec_toml(spec, good["design"], good["material"]))
     (run / "report.json").write_text(json.dumps(out, indent=2))
     out["run_dir"] = str(run)
     return out
+
+
+def _write_compare(run: Path, ref_spec, designs: list[tuple[str, dict]]) -> dict:
+    """Default comparison against the [reference]: side-by-side, overlay and the flagged table."""
+    from eitri import reference
+    from eitri.report import compare
+
+    ref_name, ref_weapon = reference.reference_weapon(ref_spec.spec)
+    ref_m = next(r["reference_profile"]["reference"] for _, r in designs)
+    items = [(name, r["_weapon"], r["reference_profile"]["design"]) for name, r in designs]
+    return compare.write(run, (ref_name, ref_weapon, ref_m), items, ref_spec.match_mass)
 
 
 @app.command()
@@ -255,8 +268,8 @@ def eval_cmd(
     if no_fea:
         spec.analysis.fea = False
     run = None if no_files else _run_dir(spec_path, "eval")
-    results = [evaluate(spec, material=m, fine=fine, keep_fea_dir=run / "fea" / m if run else None)
-               for m in spec.material.names()]
+    results = [evaluate(spec, material=m, fine=fine, keep_fea_dir=run / "fea" / m if run else None,
+                        full_reference=run is not None) for m in spec.material.names()]
     out = _write_outputs(run, spec, spec_path, results)
     if json_out:
         typer.echo(json.dumps(out, indent=2))
@@ -268,29 +281,9 @@ def eval_cmd(
     raise typer.Exit(0 if all(r.get("ok") for r in results) else 1)
 
 
-@app.command("optimize")
-def optimize_cmd(
-    spec_path: Path,
-    trials: int = typer.Option(200, help="number of candidate designs to evaluate"),
-    workers: int = typer.Option(max(1, min(8, (os.cpu_count() or 2) - 1)), help="parallel processes"),
-    seed: int = typer.Option(0),
-    verify_top: int = typer.Option(5, help="fine-mesh check up to this many top candidates"),
-    warm_start: Path | None = typer.Option(None, help="history.jsonl of an earlier run: seed with its best designs"),
-    warm_k: int = typer.Option(12, help="how many earlier designs to seed"),
-):
-    """Optimize the [design] ranges for the [objective] under [constraints]; verify the best on a fine mesh."""
-    from eitri.optimize import optimize
-
-    spec = spec_mod.load(spec_path)
-    run = _run_dir(spec_path, "optimize")
-    typer.echo(f"optimizing {sorted(spec.free_params())} over {spec.material.names()} "
-               f"({trials} trials, {workers} workers) -> {run}")
-    from eitri.optimize import warm_designs
-
-    warm = warm_designs(warm_start, warm_k) if warm_start else []
-    res = optimize(spec, trials, workers, seed, run / "history.jsonl", log=typer.echo, warm=warm)
+def _finish_optimize(spec, spec_path: Path, run: Path, res, verify_top: int) -> None:
+    """Fine-mesh verification of the top candidates, outputs, summary; exits with the verdict."""
     render.pareto_png(res.history, run / "pareto.png", spec.objective.name, res.best)
-
     best = res.best
     if best is None or "error" in best:
         typer.echo("no valid design found; see history.jsonl")
@@ -300,7 +293,7 @@ def optimize_cmd(
     verified = []
     for cand in ranked:
         v = evaluate(spec, design=cand["design"], material=cand["material"], fine=True,
-                     keep_fea_dir=run / "best" / "fea")
+                     keep_fea_dir=run / "best" / "fea", full_reference=True)
         verified.append((cand, v))
         typer.echo(f"  fine-mesh check trial {cand['trial']}: {spec.objective.name} "
                    f"{cand.get('objective', float('nan')):.4g} -> {'ok' if v.get('ok') else 'FAIL ' + ','.join(v.get('failed', [v.get('error', '')]))}")
@@ -316,6 +309,7 @@ def optimize_cmd(
         "n_feasible": sum(h["ok"] for h in res.history),
         "baseline": {k: b0.get(k) for k in ("ok", "objective", "mass_kg", "sf_spinning", "sf_impact", "failed")},
         "best_trial": best["trial"],
+        "best_phase": best.get("phase"),
         "fine_mesh_checks": [{"trial": c["trial"], "objective": c.get("objective"), "ok": bool(v.get("ok")),
                               "failed": v.get("failed", [v.get("error")])} for c, v in verified],
         "best_verified_fine_mesh": _clean(public(verify)),
@@ -326,11 +320,131 @@ def optimize_cmd(
     if b0.get("objective") is not None and best.get("objective"):
         typer.echo(f"baseline {spec.objective.name} {b0['objective']:.4g} "
                    f"({'ok' if b0['ok'] else 'FAIL ' + ','.join(b0.get('failed', []))}) -> "
-                   f"best {best['objective']:.4g} (trial {best['trial']})")
+                   f"best {best['objective']:.4g} (trial {best['trial']}, {best.get('phase')})")
     typer.echo("verified on fine mesh:")
     typer.echo(_summary(verify))
     typer.echo(f"run: {run}\nbest spec: {summary['best_spec']}")
     raise typer.Exit(0 if res.best_feasible and verify.get("ok") else 1)
+
+
+WORKERS = max(1, min(8, (os.cpu_count() or 2) - 1))
+
+
+@app.command("optimize")
+def optimize_cmd(
+    spec_path: Path,
+    trials: int = typer.Option(200, help="global candidates (TPE)"),
+    workers: int = typer.Option(WORKERS, help="parallel processes"),
+    seed: int = typer.Option(0),
+    verify_top: int = typer.Option(5, help="fine-mesh check up to this many top candidates"),
+    warm_start: Path | None = typer.Option(None, help="history.jsonl of an earlier run: seed with its best designs"),
+    warm_k: int = typer.Option(12, help="how many earlier designs to seed"),
+    polish: bool = typer.Option(True, help="Newton repair/climb of the best candidates, then CMA-ES around them"),
+    local_trials: int | None = typer.Option(None, help="CMA-ES designs in the polish phase (default trials/4)"),
+    radius: float = typer.Option(0.15, help="CMA-ES box: +- this fraction of each parameter's range"),
+):
+    """Optimize the [design] ranges for the [objective] under [constraints]; verify the best on a fine mesh."""
+    from eitri.optimize import optimize, warm_designs
+
+    spec = spec_mod.load(spec_path)
+    run = _run_dir(spec_path, "optimize")
+    typer.echo(f"optimizing {sorted(spec.free_params())} over {spec.material.names()} "
+               f"({trials} trials, {workers} workers) -> {run}")
+    warm = warm_designs(warm_start, warm_k) if warm_start else []
+    res = optimize(spec, trials, workers, seed, run / "history.jsonl", log=typer.echo, warm=warm, polish=polish,
+                   local_trials=local_trials, radius=radius)
+    _finish_optimize(spec, spec_path, run, res, verify_top)
+
+
+def _start_design(start: str) -> dict:
+    """A design from a spec (`spec_fixed.toml`, ranges -> midpoint) or a history trial (`history.jsonl#123`)."""
+    path, _, trial = start.partition("#")
+    if trial:
+        for line in Path(path).read_text().splitlines():
+            rec = json.loads(line)
+            if rec["trial"] == int(trial):
+                return rec["design"]
+        raise typer.BadParameter(f"no trial {trial} in {path}")
+    return spec_mod.load(path).fixed_design()
+
+
+@app.command("refine")
+def refine_cmd(
+    spec_path: Path,
+    start: str = typer.Option(..., help="design to start from: spec_fixed.toml, or history.jsonl#<trial>"),
+    workers: int = typer.Option(WORKERS, help="parallel processes"),
+    local_trials: int = typer.Option(48, help="CMA-ES designs after the Newton repair/climb (0 = none)"),
+    radius: float = typer.Option(0.15, help="CMA-ES box: +- this fraction of each parameter's range"),
+    seed: int = typer.Option(0),
+    verify_top: int = typer.Option(5),
+):
+    """Local search from one design: Newton repair (if it fails checks) or climb, then CMA-ES around it. The
+    spec's [design] ranges bound the search; values outside them are clipped."""
+    from eitri.optimize import OptimizeResult, _polish, _record, _worker, int_params, violations
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+
+    spec = spec_mod.load(spec_path)
+    spec.analysis.threads = 1
+    design = spec.fixed_design() | _start_design(start)
+    free = spec.free_params()
+    design = {k: (min(max(v, free[k][0]), free[k][1]) if k in free else v) for k, v in design.items()}
+    run = _run_dir(spec_path, "refine")
+    typer.echo(f"refining from {start} -> {run}")
+    history, full = [], {}
+    mat = spec.material.names()[0]
+    with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as pool, \
+            (run / "history.jsonl").open("w") as hist:
+        def record(result, phase, number=None):
+            rec = _record(len(history), result, phase)
+            rec["violation"] = sum(violations(result))
+            history.append(rec)
+            full[rec["trial"]] = result
+            hist.write(json.dumps(rec) + "\n")
+            hist.flush()
+            return rec
+
+        record(pool.submit(_worker, spec, design, mat).result(), "start")
+        h0 = history[0]
+        typer.echo(f"  start: {'OK' if h0['ok'] else 'fails ' + ','.join(h0.get('failed', [h0.get('error', '')]))}")
+        _polish(spec, history, full, pool, record, int_params(spec.weapon.type), workers, seed, typer.echo,
+                local_trials, radius)
+    feasible = [h for h in history if h["ok"]]
+    best = max(feasible, key=lambda h: h["score"]) if feasible else min(history, key=lambda h: h["violation"])
+    _finish_optimize(spec, spec_path, run, OptimizeResult(history, best, bool(feasible), history[0]), verify_top)
+
+
+@app.command("compare")
+def compare_cmd(
+    specs: list[Path],
+    ref: Path | None = typer.Option(None, help="reference spec (default: the first spec's [reference])"),
+    fine: bool = typer.Option(False, "--fine", help="verification mesh"),
+    out: Path | None = typer.Option(None, help="output directory (default: <first spec>/runs/<time>-compare)"),
+):
+    """Compare designs (their specs' fixed designs) with a reference: side-by-side silhouettes, overlay, and
+    every load case / region / tooth width side by side, with whatever is worse than the reference flagged."""
+    from eitri.spec import Reference
+
+    loaded = [spec_mod.load(p) for p in specs]
+    r = Reference(spec=str(ref)) if ref else next((s.reference for s in loaded if s.reference), None)
+    if r is None:
+        raise typer.BadParameter("no reference: pass --ref or give the specs a [reference] section")
+    run = out or _run_dir(specs[0], "compare")
+    run.mkdir(parents=True, exist_ok=True)
+    designs = []
+    for path, s in zip(specs, loaded):
+        s.reference = r
+        res = evaluate(s, fine=fine, full_reference=True)
+        if "error" in res:
+            raise typer.BadParameter(f"{path}: {res['error']}")
+        typer.echo(_summary(res))
+        names = [n for n, _ in designs]
+        name = s.name if s.name not in names else f"{s.name} ({path.parent.name})"
+        designs.append((name, res))
+    rows = _write_compare(run, r, designs)
+    (run / "compare.json").write_text(json.dumps(_clean(rows), indent=2))
+    typer.echo((run / "compare.md").read_text())
+    typer.echo(f"run: {run}")
 
 
 @app.command()

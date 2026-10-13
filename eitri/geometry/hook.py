@@ -302,6 +302,13 @@ class Hook(Weapon):
             return min(p.lock_d_mm / 2, p.bolt_pcd_mm / 2 - p.lock_boss_d_mm / 2)
         return p.bore_mm / 2
 
+    def has_pulley_lock(self) -> bool:
+        return self.params.lock_d_mm > 0 and self.params.bolt_count > 0
+
+    def center_cutout_r_mm(self) -> float:
+        p = self.params
+        return p.lock_d_mm / 2 if p.lock_d_mm > 0 and p.bolt_count else p.bore_mm / 2
+
     def _residual(self, st: dict, wall: float) -> np.ndarray:
         """First moment (mm^3) left after hollowing the lobe with this wall (hub cutouts are symmetric)."""
         self._n_evals += 1

@@ -39,7 +39,7 @@ def _profile(overall, regions):
 
 
 def _metrics(energy, width, cases):
-    return {"energy_j": energy, "tooth_width_mm": {"3": width}, "cases": cases}
+    return {"energy_j": energy, "mass_kg": 0.374, "tooth_width_mm": {"3": width}, "cases": cases}
 
 
 def test_compare_is_per_region_and_ignores_regions_far_from_failure():
@@ -55,6 +55,9 @@ def test_compare_is_per_region_and_ignores_regions_far_from_failure():
     assert res["ref_hit_tip3"].ok and res["ref_energy"].ok and res["ref_tooth_width"].ok
     narrow = compare(_metrics(360, 12, mine["cases"]), ref)
     assert not {c.name: c for c in narrow}["ref_tooth_width"].ok
+    heavy = {c.name: c for c in compare(mine | {"mass_kg": 0.399}, ref)}
+    assert not heavy["ref_mass"].ok  # a replacement weapon gets the reference's mass budget
+    assert {c.name: c for c in compare(mine | {"mass_kg": 0.399}, ref, match_mass=False)}.keys().isdisjoint({"ref_mass"})
 
 
 def test_tooth_widths_of_a_disc_sector_are_its_arcs():

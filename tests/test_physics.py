@@ -137,3 +137,24 @@ def test_minimize_mass_objective_and_energy_floor(spec):
     assert r["objective"]["name"] == "mass"
     assert r["objective"]["score"] == pytest.approx(-r["mass"]["mass_kg"])
     assert "energy_min" in r["failed"]
+
+
+def test_shaft_loads_closed_form():
+    from eitri.physics.shaft import gyro_moment_nm, shaft_loads
+
+    assert gyro_moment_nm(1e-3, 700.0, 180.0) == pytest.approx(1e-3 * 700 * math.pi)
+    s = shaft_loads(10e3, 0.0, 40.0, 20.0, 10.0)  # centered: M = F L / 4, each bearing F / 2
+    assert s["bending_moment_nm"] == pytest.approx(10e3 * 0.04 / 4)
+    assert s["bearing_a_kn"] == pytest.approx(5.0) and s["bearing_b_kn"] == pytest.approx(5.0)
+    assert s["bending_stress_mpa"] == pytest.approx(32 * 100 / (math.pi * 0.01**3) * 1e-6)
+    o = shaft_loads(10e3, 0.0, 40.0, -10.0, 10.0)  # overhung 10 mm: M = F o, A takes F (L + o) / L
+    assert o["bending_moment_nm"] == pytest.approx(100.0) and o["bearing_a_kn"] == pytest.approx(12.5)
+
+
+def test_toughness_from_charpy_is_sane():
+    from eitri.physics.shaft import critical_crack_mm, k_ic_mpa_sqrt_m
+
+    k = k_ic_mpa_sqrt_m(50, 1170)  # 4340 at ~40 HRC: K_IC ~100 MPa*sqrt(m)
+    assert 80 < k < 130
+    assert k_ic_mpa_sqrt_m(27, 1250) < k  # tougher steel, higher K_IC
+    assert critical_crack_mm(k, 1000) > critical_crack_mm(k, 2000)

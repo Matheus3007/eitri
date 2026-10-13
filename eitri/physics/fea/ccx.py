@@ -24,12 +24,16 @@ class LoadCase:
     pressures: list[tuple[int, int, float]] = field(default_factory=list)  # (elem, face 3/4/5, MPa)
     cloads: list[tuple[int, int, float]] = field(default_factory=list)  # (node, dof 1/2, N)
     fixed: dict[int, tuple[int, ...]] = field(default_factory=dict)  # node -> constrained dofs
+    # linear constraints sum(coef * u[node, dof]) = 0, e.g. a node held only along a surface normal
+    equations: list[list[tuple[int, int, float]]] = field(default_factory=list)
 
 
 @dataclass
 class Result:
     disp: np.ndarray  # (n, 2) mm
     stress: np.ndarray  # (n, 6) MPa: sxx syy szz sxy syz szx (nodal, extrapolated + averaged)
+    # (n, 3) N: nodal internal force; at a supported node minus the load applied there = its reaction
+    forces: np.ndarray | None = None
 
     @property
     def von_mises(self) -> np.ndarray:
@@ -51,6 +55,8 @@ def write_inp(path: Path, mesh: Mesh2D, thickness_mm: float, E_mpa: float, nu: f
     L += [f"{i + 1}," + ",".join(map(str, e)) for i, e in enumerate(mesh.elems)]
     L += ["*MATERIAL, NAME=STEEL", "*ELASTIC", f"{E_mpa},{nu}", "*DENSITY", f"{density_kg_m3 * 1e-12:.6e}",
           "*SOLID SECTION, ELSET=Eall, MATERIAL=STEEL", f"{thickness_mm}"]
+    for eq in case.equations:
+        L += ["*EQUATION", str(len(eq)), ",".join(f"{n},{d},{c:.12g}" for n, d, c in eq)]
     L.append("*BOUNDARY")
     for node, dofs in case.fixed.items():
         L += [f"{node},{d},{d},0." for d in dofs]
@@ -63,7 +69,7 @@ def write_inp(path: Path, mesh: Mesh2D, thickness_mm: float, E_mpa: float, nu: f
     if case.cloads:
         L.append("*CLOAD")
         L += [f"{n},{d},{v:.9g}" for n, d, v in case.cloads]
-    L += ["*NODE FILE", "U", "*EL FILE", "S", "*END STEP"]
+    L += ["*NODE FILE", "U,RF", "*EL FILE", "S", "*END STEP"]
     path.write_text("\n".join(L) + "\n")
 
 
@@ -75,7 +81,7 @@ def parse_frd(path: Path, n_nodes: int) -> Result:
         if line.startswith(" -4"):
             parts = line.split()
             current = parts[1]
-            ncomp = {"DISP": 3, "STRESS": 6}.get(current, 0)
+            ncomp = {"DISP": 3, "STRESS": 6, "FORC": 3}.get(current, 0)
             if ncomp:
                 blocks[current] = np.zeros((n_nodes, ncomp))
         elif line.startswith(" -1") and current in blocks:
@@ -86,7 +92,7 @@ def parse_frd(path: Path, n_nodes: int) -> Result:
             current = None
     if "DISP" not in blocks or "STRESS" not in blocks:
         raise RuntimeError(f"no DISP/STRESS results in {path}")
-    return Result(disp=blocks["DISP"], stress=blocks["STRESS"])
+    return Result(disp=blocks["DISP"], stress=blocks["STRESS"], forces=blocks.get("FORC"))
 
 
 def run_job(inp: str, n_nodes: int, name: str, threads: int = 1, keep_dir: Path | None = None) -> Result:
@@ -117,4 +123,5 @@ def solve(mesh: Mesh2D, thickness_mm: float, E_mpa: float, nu: float, density_kg
         write_inp(path, mesh, thickness_mm, E_mpa, nu, density_kg_m3, case)
         inp = path.read_text()
     res = run_job(inp, mesh.n_nodes, case.name, threads, keep_dir)
-    return Result(disp=res.disp[:, :2], stress=res.stress)
+    return Result(disp=res.disp[:, :2], stress=res.stress,
+                  forces=res.forces[:, :2] if res.forces is not None else None)

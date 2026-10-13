@@ -12,8 +12,12 @@ fracture):
     hit_tip3    in-plane hit on the outer 3 mm of the face (tooth-to-tooth, tip on tip)
     hit_tip8    in-plane hit on the outer 8 mm of the face
     flat_hit    3D: force normal to the plate on the top face near the tip (vertical spinner, wedge, floor)
-plus geometry: the tooth must be at least as wide as the reference's at every depth below the tip, and
-stored energy at least the reference's.
+plus the cheap ones: the tooth must be at least as wide as the reference's at every depth below the tip, stored
+energy at least the reference's, and (`match_mass`, default) mass at most the reference's -- a replacement weapon
+has the reference's mass budget.
+
+The cheap checks run on every candidate (so the optimizer sees them from the start); the load cases only for
+candidates that pass everything else.
 """
 
 import hashlib
@@ -28,7 +32,7 @@ from eitri.geometry.weapon import Check
 from eitri.physics.fea import analysis as fea
 from eitri.physics.fea.solid3d import oop_run, yield_scale
 
-METRICS_VERSION = 1
+METRICS_VERSION = 4  # bump whenever the FEA model changes (cache key)
 TOOTH_DEPTHS_MM = (3, 5, 10, 15, 20, 25, 30)
 REGIONS = ("tip", "tooth", "arm", "hub")
 REGION_CAP = 1.25  # regions are compared up to this multiple of the reference's first-yield force
@@ -61,9 +65,9 @@ def _profile(weapon, xy, cf_stress, hit_stress, hit_force_n, body, yield_mpa) ->
             "at_mm": [round(float(v), 2) for v in xy[i]], "regions_kn": per}
 
 
-def _plane_case(weapon, mat, omega, contact_mm, size, run=None) -> dict:
+def _plane_case(weapon, mat, omega, contact_mm, size, run=None, hub_support="auto") -> dict:
     if run is None:
-        run = fea.run(weapon, mat.E, mat.nu, mat.density, omega, 1e4, contact_mm, size)
+        run = fea.run(weapon, mat.E, mat.nu, mat.density, omega, 1e4, contact_mm, size, hub_support=hub_support)
     cf, imp = run.cases
     return _profile(weapon, run.mesh.nodes, cf.result.stress, imp.result.stress, run.applied_force_n,
                     cf.zones["body"], mat.yield_)
@@ -85,56 +89,81 @@ def tooth_widths(weapon) -> dict[str, float]:
     return out
 
 
-def metrics(result: dict, mat, fine: bool) -> dict:
+def cheap_metrics(weapon, energy_j: float, mass: dict) -> dict:
+    """`mass`: MassProps.to_dict(). Also what the comparison report shows (shape and mass properties)."""
+    return {"energy_j": energy_j, "mass_kg": mass["mass_kg"], "moi_kgm2": mass["moi_kgm2"],
+            "imbalance_gmm": mass["static_imbalance_gmm"], "hook_deg": weapon.hook_deg(),
+            "face_depth_mm": weapon.tooth_depth_mm(), "tip_radius_mm": weapon.tip_radius_mm(),
+            "tooth_width_mm": tooth_widths(weapon)}
+
+
+def case_metrics(result: dict, mat, fine: bool) -> dict:
     """Failure profile of an evaluated design (`evaluate(...)` result with its in-memory FEA run)."""
     w, run = result["_weapon"], result["_fea"]
     omega = result["drive"]["top_rad_s"]
     size = 2 * w.tip_radius_mm() / (75 if fine else 25)
     oop = oop_run(w, mat.E, mat.nu, mat.density, omega, size_mm=2.0 if fine else 3.0)
     return {
-        "energy_j": result["impact"]["energy_j"],
-        "tooth_width_mm": tooth_widths(w),
         "cases": {
             "hit_bite": _plane_case(w, mat, omega, None, None, run),
-            "hit_tip3": _plane_case(w, mat, omega, 3.0, size),
-            "hit_tip8": _plane_case(w, mat, omega, 8.0, size),
+            "hit_tip3": _plane_case(w, mat, omega, 3.0, size, hub_support=run.hub_support),
+            "hit_tip8": _plane_case(w, mat, omega, 8.0, size, hub_support=run.hub_support),
             "flat_hit": _profile(w, oop.nodes[:, :2], oop.centrifugal.stress, oop.unit_hit.stress, 1.0, oop.body,
                                  mat.yield_),
         },
     }
 
 
-def reference_metrics(path: str, fine: bool) -> dict:
+def reference_metrics(path: str, fine: bool, hub_support: str = "auto") -> dict:
     """Metrics of the reference spec's design, cached next to it (keyed by its text and this code's version)."""
     from eitri import materials
     from eitri.evaluate import evaluate
     from eitri.spec import load
 
     src = Path(path)
-    key = hashlib.sha1(f"{src.read_text()}|{METRICS_VERSION}|{fine}".encode()).hexdigest()
+    key = hashlib.sha1(f"{src.read_text()}|{METRICS_VERSION}|{fine}|{hub_support}".encode()).hexdigest()
     cache = src.with_name(".eitri_reference.json")
     data = json.loads(cache.read_text()) if cache.exists() else {}
     if key not in data:
         spec = load(src)
+        spec.analysis.hub_support = hub_support
         mat = materials.get(spec.material.names()[0])
         r = evaluate(spec, fine=fine)
         if "error" in r:
             raise RuntimeError(f"reference {path} doesn't evaluate: {r['error']}")
-        data[key] = metrics(r, mat, fine)
+        data[key] = (cheap_metrics(r["_weapon"], r["impact"]["energy_j"], r["mass"])
+                     | case_metrics(r, mat, fine))
         cache.write_text(json.dumps(data, indent=1))
     return data[key]
 
 
-def compare(mine: dict, ref: dict) -> list[Check]:
-    """One check per criterion; values are ratios to the reference (>= 1 passes)."""
+def reference_weapon(path: str):
+    """(name, weapon) of the reference spec's design, for drawing."""
+    from eitri.evaluate import build_weapon
+    from eitri.spec import load
+
+    spec = load(path)
+    return spec.name, build_weapon(spec, spec.fixed_design())
+
+
+def compare_cheap(mine: dict, ref: dict, match_mass: bool = True) -> list[Check]:
     checks = [Check("ref_energy", mine["energy_j"] >= ref["energy_j"], mine["energy_j"], ref["energy_j"],
                     "stored energy vs the reference")]
+    if match_mass:
+        checks.append(Check("ref_mass", mine["mass_kg"] <= ref["mass_kg"], mine["mass_kg"], ref["mass_kg"],
+                            "a replacement weapon gets the reference's mass budget"))
     ratios = {d: mine["tooth_width_mm"][d] / ref["tooth_width_mm"][d] for d in ref["tooth_width_mm"]
               if ref["tooth_width_mm"][d] > 0}
     d = min(ratios, key=ratios.get)
     checks.append(Check("ref_tooth_width", ratios[d] >= 1.0, ratios[d], 1.0,
                         f"tooth width / reference at every depth; narrowest {d} mm below the tip: "
                         f"{mine['tooth_width_mm'][d]:.1f} vs {ref['tooth_width_mm'][d]:.1f} mm"))
+    return checks
+
+
+def compare_cases(mine: dict, ref: dict) -> list[Check]:
+    """One check per load case; values are the weakest region's ratio to what it needs (>= 1 passes)."""
+    checks = []
     for case in CASES:
         m, r = mine["cases"][case], ref["cases"][case]
         # each region must hold what the same region of the reference holds, up to 1.25x the reference's first
@@ -147,3 +176,7 @@ def compare(mine: dict, ref: dict) -> list[Check]:
                             f"{r['yield_force_kn']:.2f} kN in the {r['region']}); weakest vs reference: {k} "
                             f"{m['regions_kn'][k]:.2f} vs {need[k]:.2f} kN needed"))
     return checks
+
+
+def compare(mine: dict, ref: dict, match_mass: bool = True) -> list[Check]:
+    return compare_cheap(mine, ref, match_mass) + compare_cases(mine, ref)

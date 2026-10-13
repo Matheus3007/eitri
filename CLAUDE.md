@@ -30,6 +30,8 @@ Always go through the wrapper, which sets `UV_PROJECT_ENVIRONMENT`:
 ./eitri.sh eitri new projects/<name> [--type fang|disc]
 ./eitri.sh eitri eval projects/<name>/spec.toml [--json] [--no-files] [--fine] [--no-fea]
 ./eitri.sh eitri optimize projects/<name>/spec.toml [--trials 200] [--workers 8] [--seed 0]
+./eitri.sh eitri refine projects/<name>/spec.toml --start <spec_fixed.toml | history.jsonl#<trial>>
+./eitri.sh eitri compare projects/a/spec.toml [projects/b/spec.toml ...] [--ref projects/rebot/spec.toml]
 ./eitri.sh eitri check projects/<name>/spec.toml
 ./eitri.sh eitri materials
 ./eitri.sh eitri show projects/<name>/spec.toml   # OCP CAD Viewer panel in VS Code (needs `--extra viewer`)
@@ -44,17 +46,33 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
 2. `eval` writes `runs/<timestamp>-eval/`: `report.json`, `profile_<mat>.png`, `stress_<mat>.png`,
    `spinup_<mat>.png`, `weapon.step`, `spec_fixed.toml`, `fea/` (ccx decks + results).
    Read the PNGs; read `report.json` for numbers, `checks[]`, `failed[]`. Exit code 1 = a check failed.
-3. `optimize` writes `runs/<timestamp>-optimize/`: `history.jsonl` (every candidate), `pareto.png`,
-   `summary.json`, and `best/` (eval outputs of the winner re-verified on the fine mesh, including
+3. `optimize` writes `runs/<timestamp>-optimize/`: `history.jsonl` (every candidate, with its `phase`),
+   `pareto.png`, `summary.json`, and `best/` (eval outputs of the winner re-verified on the fine mesh, including
    `best/spec_fixed.toml` to continue iterating with `eval`).
+4. With a `[reference]`, every eval / optimize best / `compare` also writes `compare_sidebyside.png` (filled
+   silhouettes, same scale, canonical frame), `compare_overlay.png` and `compare.md` (every quantity side by
+   side, anything worse than the reference flagged **WORSE**). This is the default review format the user wants.
+- Long runs (optimize/refine in the background): run them from a frozen copy of the package, or don't edit
+  `eitri/` while they run -- worker processes spawn lazily and pick up half-edited code (a run died that way).
 
 ## Physics model (know its limits)
 - Mass/MOI: exact from the B-rep. Drive: BLDC with current limit, ODE spin-up.
 - Hit: tooth = point mass I/R^2 at tip speed vs opponent at rest, restitution e -> impulse J;
-  equivalent static peak force = (pi/2) J / contact_time (half-sine). `contact_time_ms` = 0.71 ms default,
-  calibrated on Rebot V3 (Hardox 500, 6S 880/sqrt3 kV, 1.5:1, survives): at 0.71 ms its body is exactly at
+  equivalent static peak force = (pi/2) J / contact_time (half-sine). `contact_time_ms` = 0.67 ms default,
+  calibrated on Rebot V3 (Hardox 500, 6S 880/sqrt3 kV, 1.5:1, survives): at 0.67 ms its body is exactly at
   first yield, so impact SF >= 1 means "at least as robust as a proven weapon". (The user's team's explicit
-  sims used a 2 ms total window, so the true pulse is between 0.71 and 2 ms.)
+  sims used a 2 ms total window, so the true pulse is between 0.67 and 2 ms. It was 0.71 ms with the older
+  fully-fixed bolt holes; old project specs still say 0.71.)
+- Hub (`[analysis] hub_support`, default "auto"): the hit's net force is reacted by rigid frictionless parts
+  bearing on the hole walls that face the push (linear: nodes held along the wall normal via *EQUATION) --
+  "lock" (the pulley's lobed boss in the center cutout; bolts in clearance holes only clamp), "bolts", "auto"
+  (lock if the weapon has one). Hole stress is judged (mesh refined around holes) except a 1.5 mm layer at the
+  rigid contact; reactions (RF minus applied loads) give `stress.joint` load shares and, for "bolts", the
+  `bolt_shear` check (`[joint]`). "fixed" = the old fully-fixed holes. On Rebot: lock 22.6 kN vs fixed 21.4,
+  same first-yield spot (hub neck). Which path really carries the hit depends on clearances: lock by design.
+- Robot side (`report.robot`): gyro couple I*omega*tilt rate (`[context] tilt_rate_dps`), optional `[shaft]`
+  bending + bearing loads (`shaft_bending` check), and a damage-tolerance number: K_IC from Charpy
+  (Roberts-Newton lower bound) and the critical edge-crack depth at the hot spot under the estimated peak hit.
 - Hook geometry: outline drawn first inside the single-tooth bite envelope r(phi) = R - bite*phi/360 (the
   counterweight can never be a second tooth), sized by `cw_size_frac`. Balance: the lobe is hollowed into a
   constant-wall shell; the wall is solved (regula falsi, >= `wall_mm`) to remove the excess moment, and the
@@ -87,16 +105,26 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
 - CalculiX 2.17 multithreaded runs are nondeterministic (~1% stress scatter between identical runs):
   `[analysis] threads = 1` (default); parallelism comes from evaluating candidates in parallel.
 - Reference comparison (`[reference] spec = "projects/rebot/spec.toml"`, eitri/reference.py): the design must
-  not lose against a proven weapon. Same code/mesh on both, four load cases -- in-plane hit on the bite, on the
+  not lose against a proven weapon. A replacement gets the reference's mass budget (`match_mass`, default true:
+  the user rejected a 399 g design meant to replace the 374 g Rebot). Cheap checks (energy, mass, tooth width)
+  run on every candidate; the load cases only on candidates passing everything else (or `full_reference`).
+  Same code/mesh on both, four load cases -- in-plane hit on the bite, on the
   outer 3 mm (tooth-to-tooth stand-in) and 8 mm of the face, and a 3D out-of-plane hit on the flat of the tooth
   (C3D10, solid3d.py, validated vs cantilever theory) -- each split into regions tip/tooth/arm/hub; every region
   must hold what the reference's same region holds (up to 1.25x the reference's first yield), plus tooth width
-  at every depth and energy. Reference metrics are cached in `.eitri_reference.json` next to its spec; the
-  expensive cases only run for candidates passing everything else (~20 s, ~650 MB each: 6 workers on 7 GB).
+  at every depth and energy. Reference metrics are cached in `.eitri_reference.json` next to its spec (key:
+  spec text + `METRICS_VERSION` -- bump it whenever the FEA model changes); the load cases cost ~20 s and
+  ~650 MB per candidate (6 workers on 7 GB).
 - Objectives: `[objective] maximize = energy|moi|effective_mass`, or `minimize = "mass"` (lightest weapon;
   pair with `[constraints] min_energy_j`). The optimizer maximizes `objective.score` = sign x value.
-- Optimizer: SF limits get `[analysis] coarse_margin` (5%) on the coarse mesh; at the end the top
-  `--verify-top` candidates are re-run on the fine mesh and the best that still passes wins.
+- Optimizer: global TPE, then a polish phase (optimize/local.py): Newton repair of the best near-misses --
+  finite-difference Jacobian of every check margin (all load cases computed at every point), smallest step
+  that fixes them (slack QP, trust region, Broyden updates) -- or an SQP climb of the best feasible design,
+  then CMA-ES within +-`radius` of each range. `refine` runs the polish phase from any design. SF limits get
+  `[analysis] coarse_margin` (5%) on the coarse mesh; at the end the top `--verify-top` candidates are re-run
+  on the fine mesh and the best that still passes wins.
+- Balance is always solved, never tuned: every generator balances itself by Newton/secant to < 0.5 mm^3 of
+  first moment, and the default `max_imbalance_gmm` is 0.1 (CG on the axis).
 - Center of percussion is intentionally not an objective: a balanced rotor's axle always reacts the full
   impulse. Imbalance is a hard constraint; we report impulse / peak force / inward force fraction.
 

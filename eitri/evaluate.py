@@ -10,7 +10,7 @@ from eitri.geometry.fang import Fang
 from eitri.geometry.hook import Hook
 from eitri.geometry.step_part import StepPart
 from eitri.geometry.weapon import Check, Weapon
-from eitri.physics import drive, impact
+from eitri.physics import drive, impact, shaft
 from eitri.physics.fea import analysis as fea
 from eitri.physics.fea.ccx import CCX
 from eitri.physics.mass import mass_props
@@ -37,7 +37,9 @@ def lame_bore_hoop_mpa(density: float, nu: float, omega: float, r_in_mm: float, 
 
 
 def evaluate(spec: Spec, design: dict[str, float] | None = None, material: str | None = None,
-             weapon: Weapon | None = None, fine: bool = False, keep_fea_dir=None) -> dict:
+             weapon: Weapon | None = None, fine: bool = False, keep_fea_dir=None,
+             full_reference: bool = False) -> dict:
+    """`full_reference`: run the reference load cases even if other checks fail (for reports)."""
     design = design if design is not None else spec.fixed_design()
     mat = materials.get(material or spec.material.names()[0])
     c = spec.constraints
@@ -71,7 +73,8 @@ def evaluate(spec: Spec, design: dict[str, float] | None = None, material: str |
         size = od / 75 if fine else (spec.analysis.mesh_mm or od / 25)
         try:
             fea_run = fea.run(weapon, mat.E, mat.nu, mat.density, dr.top_rad_s, hit.peak_force_kn * 1e3,
-                              hit.bite_mm, size, threads=spec.analysis.threads, keep_dir=keep_fea_dir)
+                              hit.bite_mm, size, threads=spec.analysis.threads, keep_dir=keep_fea_dir,
+                              hub_support=spec.analysis.hub_support)
         except Exception as e:
             return {"ok": False, "error": f"FEA failed: {type(e).__name__}: {e}", "design": design,
                     "material": mat.name}
@@ -97,20 +100,56 @@ def evaluate(spec: Spec, design: dict[str, float] | None = None, material: str |
                             stress["impact_safety_factor"], c.min_impact_safety_factor,
                             "hit force at first body yield (while spinning) / estimated peak hit force"))
 
-    ref_profile = None
-    if spec.reference is not None and fea_run is not None:
-        if all(ch.ok for ch in checks):  # the expensive cases only for designs that pass everything else
-            from eitri import reference
-
-            ref_profile = {"design": None, "reference": reference.reference_metrics(spec.reference.spec, fine)}
-            partial = {"_weapon": weapon, "_fea": fea_run, "drive": dr.to_dict(), "impact": hit.to_dict()}
-            ref_profile["design"] = reference.metrics(partial, mat, fine)
-            checks += reference.compare(ref_profile["design"], ref_profile["reference"])
-        else:
-            checks.append(Check("ref_profile", False, None, None,
-                                "not compared with the reference: other checks fail first"))
+    # loads on the rest of the robot, and damage tolerance at the hot spot
+    gyro = shaft.gyro_moment_nm(mp.moi_kgm2, dr.top_rad_s, spec.context.tilt_rate_dps)
+    robot = {"gyro_moment_nm": gyro, "tilt_rate_dps": spec.context.tilt_rate_dps,
+             "shaft_peak_force_kn": hit.peak_force_kn}
+    if spec.shaft is not None:
+        sh = spec.shaft
+        off = sh.weapon_offset_mm if sh.weapon_offset_mm is not None else sh.bearing_span_mm / 2
+        robot["shaft"] = shaft.shaft_loads(hit.peak_force_kn * 1e3, gyro, sh.bearing_span_mm, off, sh.d_mm)
+        sf = sh.yield_mpa / robot["shaft"]["bending_stress_mpa"]
+        robot["shaft"]["safety_factor"] = sf
+        checks.append(Check("shaft_bending", sf >= sh.min_safety_factor, sf, sh.min_safety_factor,
+                            "shaft yield / bending stress at the estimated peak hit + gyro couple"))
+    k_ic = shaft.k_ic_mpa_sqrt_m(mat.charpy_j, mat.yield_)
+    peak = stress.get("impact_at_estimated_peak", {}).get("body_max_vm_mpa")
+    robot["fracture"] = {"k_ic_mpa_sqrt_m": k_ic, "hot_spot_stress_mpa": peak,
+                         "critical_crack_mm": shaft.critical_crack_mm(k_ic, peak) if peak else None}
+    jt = stress.get("joint")
+    if jt and jt["hub_support"] == "bolts":
+        bolts = {k: v for k, v in jt["at_estimated_peak_kn"].items() if k.startswith("bolt")}
+        if bolts:
+            j = spec.joint
+            holes = {f"bolt{i}": r for i, (_, _, r) in enumerate(weapon.support_circles())}
+            worst = max(bolts, key=bolts.get)
+            d_minor = j.bolt_minor_d_mm or 0.78 * 2 * holes[worst]
+            cap_kn = 0.6 * j.bolt_proof_mpa * math.pi * d_minor**2 / 4 * 1e-3
+            sf = cap_kn / bolts[worst] if bolts[worst] > 0 else math.inf
+            jt["bolt_shear_capacity_kn"], jt["bolt_safety_factor"] = cap_kn, sf
+            checks.append(Check("bolt_shear", sf >= j.min_bolt_safety_factor, sf, j.min_bolt_safety_factor,
+                                f"{worst} carries {bolts[worst]:.1f} kN at the estimated peak hit; shear capacity "
+                                f"{cap_kn:.1f} kN (minor d {d_minor:.2f} mm, proof {j.bolt_proof_mpa:.0f} MPa)"))
     if c.min_energy_j is not None:
         checks.append(Check("energy_min", hit.energy_j >= c.min_energy_j, hit.energy_j, c.min_energy_j))
+
+    ref_profile = None
+    if spec.reference is not None:
+        from eitri import reference
+
+        ref = reference.reference_metrics(spec.reference.spec, fine, spec.analysis.hub_support)
+        mine = reference.cheap_metrics(weapon, hit.energy_j, mp.to_dict())
+        ref_profile = {"design": mine, "reference": ref}
+        checks += reference.compare_cheap(mine, ref, spec.reference.match_mass)
+        # the expensive load cases only for designs that pass everything else (or when asked: reports)
+        if fea_run is not None and (full_reference or all(ch.ok for ch in checks)):
+            partial = {"_weapon": weapon, "_fea": fea_run, "drive": dr.to_dict(), "impact": hit.to_dict()}
+            mine |= reference.case_metrics(partial, mat, fine)
+            checks += reference.compare_cases(mine, ref)
+        else:
+            checks.append(Check("ref_profile", False, None, None,
+                                "load cases not compared with the reference: " +
+                                ("other checks fail first" if fea_run is not None else "needs the FEA")))
     objective = {"energy": hit.energy_j, "moi": mp.moi_kgm2, "effective_mass": hit.effective_mass_kg,
                  "mass": mp.mass_kg}
     o = spec.objective
@@ -125,6 +164,7 @@ def evaluate(spec: Spec, design: dict[str, float] | None = None, material: str |
         "drive": dr.to_dict(),
         "impact": hit.to_dict(),
         "stress": stress,
+        "robot": robot,
         "checks": [asdict(ch) for ch in checks],
         "reference_profile": ref_profile,
         "_weapon": weapon,

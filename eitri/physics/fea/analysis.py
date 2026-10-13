@@ -9,8 +9,16 @@ impact
     (contact_len = bite, the depth the opponent engages). Equivalent static, d'Alembert form:
       - the hit torque decelerates the rotor; that is applied as tangential inertial loads
         -m * alpha x r over the whole disc (alpha = T_hit / I), so torque is reacted by inertia, as in reality
-      - the net hit force (a balanced rotor's CG can't move) is reacted by the hub supports
-        (bolt holes, else bore), fully fixed.
+      - the net hit force (a balanced rotor's CG can't move) is reacted by the hub:
+          bearing models: rigid, frictionless parts touch the hole walls facing the push (held along the wall
+            normal only: linear, a tight fit with the contact arc assumed). Stress around the holes is real
+            (bearing, net section) and judged, except a thin layer at the contact itself (`BEARING_LAYER_MM`,
+            the rigid-pin edge singularity); the reactions give the joint loads.
+            "lock"  : the pulley's lobed boss bears on the center cutout; the bolts sit in clearance holes and
+                      only clamp (Rebot's design intent: torque through the lock, not bolt shear)
+            "bolts" : the bolts bear (plus a shaft in the center bore, if any)
+            "auto"  : "lock" when the weapon has a pulley lock, else "bolts" (default)
+          "fixed": bolt holes fully fixed (older model; a zone around each hole is excluded).
     Contact stress under the load patch is a local crushing/denting problem the elastic model can't judge,
     so results are split into zones and the safety factor uses the `body` zone.
 
@@ -19,12 +27,14 @@ which the body first yields while spinning (`yield_force_kn`) — a number that 
 uncertain contact time — and the shortest pulse the tooth survives elastically for the estimated impulse.
 """
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
 from eitri.physics.fea.ccx import LoadCase, Result, solve
-from eitri.physics.fea.mesh import Mesh2D, dist_to_segment, edges_on_segment, mesh_profile, nodes_on_circle
+from eitri.physics.fea.mesh import (Mesh2D, boundary_normals, dist_to_segment, edges_on_segment, mesh_profile,
+                                    nodes_on_circle)
 
 
 @dataclass
@@ -41,6 +51,9 @@ class FeaRun:
     contact_segment: tuple[tuple[float, float], tuple[float, float]]
     support_circles: list[tuple[float, float, float]]
     applied_force_n: float
+    hub_support: str = "fixed"
+    applied: np.ndarray | None = None  # (n, 2) N: loads of the impact case (to get reactions from RF)
+    bearing: dict[str, np.ndarray] | None = None  # support name ("bolt0".., "center") -> node ids (0-based)
 
 
 def _nearest(mesh: Mesh2D, x: float, y: float) -> int:
@@ -58,13 +71,47 @@ def _element_mass_midside(mesh: Mesh2D, thickness: float, density_t_mm3: float) 
     return m_node
 
 
+BEARING_LAYER_MM = 1.5
+
+
+def resolve_support(weapon, hub_support: str) -> str:
+    if hub_support == "auto":
+        return "lock" if weapon.has_pulley_lock() else "bolts"
+    return hub_support
+
+
+def _bearing_supports(mesh: Mesh2D, weapon, f_dir: np.ndarray, mode: str) -> dict[str, np.ndarray]:
+    """Boundary nodes a rigid bolt or the (conforming) pulley touches when the plate is pushed along f_dir:
+    wherever the hole wall faces the push (its outward normal, into the hole, has a component along f_dir), on
+    each bolt hole and on the center cutout -- for a lobed lock that includes the boss flanks. 0-based ids."""
+    xy = mesh.nodes
+    normals = boundary_normals(mesh)
+    ids = np.array(sorted(normals)) - 1
+    facing = np.array([normals[i + 1] @ f_dir for i in ids]) > 0.1
+    out = {}
+    taken = np.zeros(len(xy), bool)
+    for k, (cx, cy, r) in enumerate(weapon.support_circles()):
+        on = np.abs(np.hypot(xy[ids, 0] - cx, xy[ids, 1] - cy) - r) < 1e-3
+        if mode == "bolts" and math.hypot(cx, cy) > 1e-6:
+            out[f"bolt{k}"] = ids[on & facing]
+        taken[ids[on]] = True
+    rc = weapon.center_cutout_r_mm()
+    if rc > 0:
+        on = (np.hypot(xy[ids, 0], xy[ids, 1]) < rc + 1e-3) & ~taken[ids]
+        out["center"] = ids[on & facing]
+    return out
+
+
 def run(weapon, E_mpa: float, nu: float, density: float, omega_rad_s: float, peak_force_n: float,
-        contact_len_mm: float, mesh_size_mm: float, threads: int = 1, keep_dir=None) -> FeaRun:
+        contact_len_mm: float, mesh_size_mm: float, threads: int = 1, keep_dir=None,
+        hub_support: str = "auto") -> FeaRun:
     t = weapon.params.thickness_mm
     tip0 = weapon.impact_face()[0]
     # a contact patch only a few elements long gets a locally refined mesh at the tip
     refine = ([(tip0[0], tip0[1], contact_len_mm / 4, contact_len_mm + 2)]
               if contact_len_mm < 2 * mesh_size_mm else [])
+    if hub_support != "fixed":  # the holes are judged: resolve their stress concentration
+        refine += [(cx, cy, min(mesh_size_mm, max(r / 2, 0.5)), 2 * r) for cx, cy, r in weapon.support_circles()]
     mesh = mesh_profile(weapon.profile(), mesh_size_mm, refine=refine)
     xy = mesh.nodes
     supports = weapon.support_circles()
@@ -120,10 +167,24 @@ def run(weapon, E_mpa: float, nu: float, density: float, omega_rad_s: float, pea
     cloads = [(int(i) + 1, 1, float(fx[i])) for i in loaded] + [(int(i) + 1, 2, float(fy[i])) for i in loaded]
 
     fix_imp: dict[int, tuple[int, ...]] = {}
-    for cx, cy, r in supports:
-        for n in nodes_on_circle(mesh, cx, cy, r):
-            fix_imp[int(n)] = (1, 2)
-    cases.append(LoadCase("impact", cloads=cloads, fixed=fix_imp))
+    equations, bearing = [], None
+    hub_support = resolve_support(weapon, hub_support)
+    if hub_support != "fixed":
+        normals = boundary_normals(mesh)
+        bearing = _bearing_supports(mesh, weapon, f_vec / np.linalg.norm(f_vec), hub_support)
+        for nodes in bearing.values():
+            for i in nodes:
+                nx, ny = normals[int(i) + 1]
+                eq = [(int(i) + 1, 1, nx), (int(i) + 1, 2, ny)]
+                eq = [t for t in sorted(eq, key=lambda t: -abs(t[2])) if abs(t[2]) > 1e-9]
+                equations.append(eq)
+        if sum(len(v) for v in bearing.values()) < 3:
+            raise RuntimeError("bearing supports: fewer than 3 contact nodes")
+    else:
+        for cx, cy, r in supports:
+            for n in nodes_on_circle(mesh, cx, cy, r):
+                fix_imp[int(n)] = (1, 2)
+    cases.append(LoadCase("impact", cloads=cloads, fixed=fix_imp, equations=equations))
 
     # --- zones ---------------------------------------------------------------------------------------
     # Contact zone = tooth tip material right under the patch (local denting, acceptable damage). It never
@@ -132,8 +193,13 @@ def run(weapon, E_mpa: float, nu: float, density: float, omega_rad_s: float, pea
     contact_zone = ((dist_to_segment(xy, tip, c_end) < max(0.75 * c_len, 3.0))
                     & (np.hypot(xy[:, 0], xy[:, 1]) > r_keep))
     support_zone = np.zeros(mesh.n_nodes, bool)
-    for cx, cy, r in supports:
-        support_zone |= np.hypot(xy[:, 0] - cx, xy[:, 1] - cy) < r + max(r, 3.0)
+    if hub_support == "fixed":  # artificial stress at fully fixed holes: not judged
+        for cx, cy, r in supports:
+            support_zone |= np.hypot(xy[:, 0] - cx, xy[:, 1] - cy) < r + max(r, 3.0)
+    else:  # the rigid-contact edge itself (stress singularity at the end of the contact arc)
+        touching = xy[np.concatenate(list(bearing.values()))]
+        for p in touching:
+            support_zone |= np.hypot(xy[:, 0] - p[0], xy[:, 1] - p[1]) < BEARING_LAYER_MM
     body = ~(contact_zone | support_zone)
 
     results = []
@@ -141,7 +207,17 @@ def run(weapon, E_mpa: float, nu: float, density: float, omega_rad_s: float, pea
         res = solve(mesh, t, E_mpa, nu, density, case, threads=threads, keep_dir=keep_dir)
         zones = {"body": body, "contact": contact_zone, "support": support_zone}
         results.append(FeaCase(case.name, res, zones))
-    return FeaRun(mesh, results, (tuple(tip), tuple(c_end)), supports, float(np.linalg.norm(f_vec)))
+    return FeaRun(mesh, results, (tuple(tip), tuple(c_end)), supports, float(np.linalg.norm(f_vec)), hub_support,
+                  np.c_[fx, fy], bearing)
+
+
+def joint_loads(run: FeaRun) -> dict | None:
+    """Reaction at each bearing support (bolt, center) per newton of hit force: {name: (rx, ry)} / F."""
+    imp = run.cases[1].result
+    if run.bearing is None or imp.forces is None:
+        return None
+    react = imp.forces - run.applied
+    return {k: react[v].sum(axis=0) / run.applied_force_n for k, v in run.bearing.items()}
 
 
 def _zone_max(run: FeaRun, vm: np.ndarray, zones: dict[str, np.ndarray]) -> dict:
@@ -200,4 +276,10 @@ def summarize(run: FeaRun, yield_mpa: float, impulse_ns: float) -> dict:
     # half-sine pulse: F_peak = pi/2 * J / dt  ->  dt_min = pi/2 * J / F_yield
     out["min_elastic_contact_time_ms"] = (np.pi / 2 * impulse_ns / f_yield * 1e3) if f_yield > 0 else None
     out["impact_safety_factor"] = f_yield / F if F > 0 else None  # yield force / estimated peak hit force
+    j = joint_loads(run)
+    if j is not None:
+        out["joint"] = {"hub_support": run.hub_support,
+                        "load_share": {k: float(np.linalg.norm(v)) for k, v in j.items()},
+                        "at_estimated_peak_kn": {k: float(np.linalg.norm(v)) * F * 1e-3 for k, v in j.items()},
+                        "at_yield_force_kn": {k: float(np.linalg.norm(v)) * f_yield * 1e-3 for k, v in j.items()}}
     return out

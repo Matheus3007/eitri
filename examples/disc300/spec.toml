@@ -23,7 +23,7 @@ mass_kg = { max = 4.5 }
 min_safety_factor = 2.0
 min_impact_safety_factor = 1.0
 max_spinup_s = 5.0
-max_imbalance_gmm = 20
+max_imbalance_gmm = 0.1     # CG dead on the axis (every generator solves its balance by Newton)
 min_ligament_mm = 6
 
 [objective]

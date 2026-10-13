@@ -69,10 +69,14 @@ class Context(Strict):
     opponent_mass_kg: float = 13.6
     restitution: float = 0.2
     # Hit pulse duration -> equivalent static peak force; the least certain input (impact results scale with it).
-    # 0.71 ms is calibrated on Rebot V3's GanchoUnidente (Hardox 500, proven to survive): at this pulse its body
+    # 0.67 ms is calibrated on Rebot V3's GanchoUnidente (Hardox 500, proven to survive): at this pulse its body
     # is exactly at first yield, so impact SF >= 1 means "at least as robust as a weapon known to survive".
-    # The user's team's explicit sims used a 2 ms total window, so the real pulse is between 0.71 and 2 ms.
-    contact_time_ms: float = 0.71
+    # The user's team's explicit sims used a 2 ms total window, so the real pulse is between 0.67 and 2 ms.
+    # (0.71 ms with the older fully-fixed bolt holes; the pulley-lock bearing model reads Rebot ~6% stronger.)
+    contact_time_ms: float = 0.67
+    # How fast the spin axis may be turned (robot pitching/rolling on a hit or a bump; turning, for a vertical
+    # spinner): sets the gyroscopic couple on the bearings.
+    tilt_rate_dps: float = 360.0
 
 
 class Bound(Strict):
@@ -85,7 +89,7 @@ class Constraints(Strict):
     min_safety_factor: float = 2.0  # spinning, no hit: yield / peak von Mises in the body
     min_impact_safety_factor: float | None = 1.0  # body yield force / estimated peak hit force; None = report only
     max_spinup_s: float | None = None
-    max_imbalance_gmm: float = 20.0
+    max_imbalance_gmm: float = 0.1  # CG on the axis: generators balance themselves (Newton) to ~0.03 g*mm
     min_ligament_mm: float = 5.0
     min_energy_j: float | None = None  # stored energy at top speed
     # Re-entrant (concave) corners are stress raisers: anything kinking more than this must be filleted.
@@ -112,6 +116,28 @@ class Analysis(Strict):
     # The optimizer's coarse mesh reads safety factors a little high vs the fine mesh the winner is verified
     # on (~1-6%), so during optimization SF limits are raised by this fraction.
     coarse_margin: float = 0.05
+    # How the hub reacts the hit (eitri/physics/fea/analysis.py): rigid frictionless parts bearing on the hole
+    # walls facing the push -- "lock" (the pulley's lobed boss; bolts in clearance holes), "bolts", or "auto"
+    # (lock if the weapon has one) -- or "fixed" (bolt holes fully fixed, a zone around them unjudged).
+    hub_support: Literal["auto", "lock", "bolts", "fixed"] = "auto"
+
+
+class Shaft(Strict):
+    """Weapon shaft and bearings (optional): peak hit + gyro loads -> bending stress and bearing loads."""
+
+    d_mm: float
+    bearing_span_mm: float
+    weapon_offset_mm: float | None = None  # from bearing A; default: centered; < 0 = overhung outside A
+    yield_mpa: float = 900.0  # e.g. 4140 Q&T; a 7075 dead shaft ~ 450
+    min_safety_factor: float = 1.0
+
+
+class Joint(Strict):
+    """Bolts that drive the weapon (checked when they bear the hit: hub_support = "bolts")."""
+
+    bolt_proof_mpa: float = 830.0  # 10.9 (8.8: 600, 12.9: 970)
+    bolt_minor_d_mm: float | None = None  # shear through the thread; default 0.78 x the hole (M5 in 5.3: 4.13)
+    min_bolt_safety_factor: float = 1.0  # shear capacity (0.6 x proof x minor area) / bolt load at the peak hit
 
 
 class Reference(Strict):
@@ -119,6 +145,7 @@ class Reference(Strict):
     at least as strong, tooth at least as wide, at least as much energy."""
 
     spec: str  # path to the reference weapon's spec (relative to where eitri runs)
+    match_mass: bool = True  # mass <= the reference's: a replacement weapon gets the reference's budget
 
 
 class Objective(Strict):
@@ -147,6 +174,8 @@ class Spec(Strict):
     analysis: Analysis = Field(default_factory=Analysis)
     style: Style = Field(default_factory=Style)
     reference: Reference | None = None
+    joint: Joint = Field(default_factory=Joint)
+    shaft: Shaft | None = None
     design: dict[str, Param]
 
     def free_params(self) -> dict[str, tuple[float, float]]:

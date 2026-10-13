@@ -82,6 +82,9 @@ class StepPart(Weapon):
         if center_hole:
             pts = self._sample(center_hole[0], 200)
             params.bore_mm = 2 * float(np.hypot(pts[:, 0], pts[:, 1]).min())
+            self._center_r = float(np.hypot(pts[:, 0], pts[:, 1]).max())
+        else:
+            self._center_r = 0.0
 
     @classmethod
     def from_dict(cls, d: dict, spin: str = "ccw") -> "StepPart":
@@ -135,6 +138,12 @@ class StepPart(Weapon):
 
     def tip_radius_mm(self) -> float:
         return math.hypot(*self._tip)
+
+    def center_cutout_r_mm(self) -> float:
+        return self._center_r
+
+    def has_pulley_lock(self) -> bool:
+        return self._center_r - self.params.bore_mm / 2 > 0.5  # lobed, not round
 
     def n_teeth(self) -> int:
         return self.params.n_teeth

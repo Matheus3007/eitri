@@ -57,3 +57,19 @@ def test_mirrored_profile_meshes_counterclockwise():
     signed = ((n[e[:, 1], 0] - n[e[:, 0], 0]) * (n[e[:, 2], 1] - n[e[:, 0], 1])
               - (n[e[:, 2], 0] - n[e[:, 0], 0]) * (n[e[:, 1], 1] - n[e[:, 0], 1]))
     assert (signed > 0).all()
+
+
+def test_bearing_hub_reactions_balance_the_hit():
+    """The pulley lock (or the bolts) reacts the whole net hit force; the inertia relief takes the torque."""
+    from eitri.geometry.hook import Hook, HookParams
+    from eitri.physics.fea import analysis as fea
+
+    h = Hook(HookParams(od_mm=230, thickness_mm=6.5, envelope_bite_mm=26.6))
+    for mode in ("lock", "bolts"):
+        run = fea.run(h, 200000, 0.29, 7850, 700.0, 1e4, 20.0, 9.2, hub_support=mode)
+        j = fea.joint_loads(run)
+        total = sum(j.values())
+        f_dir = -np.array(run.applied[run.applied[:, 0] ** 2 + run.applied[:, 1] ** 2 > 0].sum(axis=0))
+        assert np.linalg.norm(total) == pytest.approx(1.0, abs=0.03)
+        assert (total @ f_dir) / np.linalg.norm(f_dir) == pytest.approx(1.0, abs=0.03)  # opposes the hit
+        assert ("center" in j) == (mode == "lock") or mode == "bolts"

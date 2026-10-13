@@ -66,6 +66,14 @@ class Weapon(ABC):
         """Smallest radius of the center cutout (where the centrifugal FEA case pins the part)."""
         return getattr(self.params, "bore_mm", 0.0) / 2
 
+    def has_pulley_lock(self) -> bool:
+        """A non-round center cutout that keys the weapon to its pulley (which then carries the hit)."""
+        return False
+
+    def center_cutout_r_mm(self) -> float:
+        """Largest radius of the center cutout (bore, or the pulley lock): where the pulley/shaft bears."""
+        return self.bore_r_mm()
+
     @abstractmethod
     def geometric_checks(self, min_ligament_mm: float) -> list[Check]:
         """Cheap analytic sanity checks on the parameters (ligaments, fits, angles)."""

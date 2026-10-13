@@ -87,7 +87,7 @@ def _swept_arm(r0: float, r1: float, end_deg: float, sweep_deg: float, curve: fl
 
 
 class Fang(Weapon):
-    BALANCE_TOL_MM3 = 5.0  # first-moment residual; ~0.5 g*mm for 10 mm steel
+    BALANCE_TOL_MM3 = 0.5  # first-moment residual: 0.5 mm^3 x 12 mm plate ~ 0.05 g*mm (CG on the axis)
     MIN_CW_WIDTH_MM = 12.0
 
     def __init__(self, params: FangParams, spin: str = "ccw"):
