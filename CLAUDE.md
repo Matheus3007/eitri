@@ -131,13 +131,19 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   single-tooth bite envelope) with its hub holes and pockets filled; `keep` selectors (hub, rim, tooth, holes,
   edge:I:W from `eitri faces`, circle, box) stay solid. SIMP on linear triangles (own numpy/scipy FE, fem.py)
   minimizing the p-norm von Mises of the in-plane hits (bite, 3, 8 mm; inertia relief with alpha = T/I(x)) plus
-  the out-of-plane hit (DKT plate bending, plate.py, validated vs cantilever), sqrt(x) stress relaxation,
+  the out-of-plane hit (DKT plate bending, plate.py, validated vs cantilever), each judged spinning like the
+  reference cases (von Mises of the density-following centrifugal stress + the hit at the reference's first-
+  yield force; without it pockets crowd the hub and the 3D flat hit fails there), sqrt(x) stress relaxation,
   density filter (`rmin_mm` = smallest member), Heaviside projection (beta 1 -> 32: grey density is cheap
   mass that carries nothing). Mass, MOI and both first moments are exact linear constraints on the projected
   densities, re-linearized every iteration and enforced by a semismooth-Newton projection. Adjoint gradients
   are checked against finite differences (tests). Compliance objective exists but thins hub necks (blind to
   stress concentration). Extraction (extract.py): 0.5 iso-contour -> smoothed rings; voids reaching the
   outline run past it (clean booleans; the outline stays exact where material reaches it).
+  Findings on Rebot (2026-10-13): inside Rebot's own outline at its mass, topology matches Rebot in-plane and
+  gains ~3-4% energy at MOI x1.04, the flat hit at the hub being the binding case; in the free bite envelope
+  it converges to a straight bar with a compact counterweight lump -- structurally efficient, not the user's
+  look, so envelope mode is exploratory.
 - `topo` weapon (geometry/topo.py): pockets offset/clipped/opened on shapely polygons (OCC 2D offsets of
   offset-built boundaries silently drop pieces), min web between pockets, one periodic spline per pocket;
   Newton on pocket offsets (common offset for the mass + two pockets' offsets, or a pocket turn when there are

@@ -73,6 +73,16 @@ def run(spec: Spec, spec_path: Path, out: Path, log: Callable[[str], None] = pri
     mass, moi_ref, src = targets(spec)
     contacts = t.contacts_mm or [bite, 3.0, 8.0]
     area = mass * (1 - 2e-5) / (mat.density * 1e-9 * base.params.thickness_mm)  # a hair under the budget
+    omega, forces = 0.0, None
+    if t.spinning and spec.reference is not None and t.contacts_mm is None:
+        from eitri.physics import drive
+        from eitri.reference import reference_metrics
+
+        rc = reference_metrics(spec.reference.spec, False, spec.analysis.hub_support)["cases"]
+        omega = drive.top_speed_rad_s(spec.drive)
+        forces = [rc[k]["yield_force_kn"] * 1e3 for k in ("hit_bite", "hit_tip3", "hit_tip8", "flat_hit")]
+        log(f"judged spinning at {omega * 30 / np.pi:.0f} rpm, hits at the reference's first-yield forces "
+            f"{[round(f / 1e3, 2) for f in forces]} kN")
     log(f"domain {dom.profile.area:.0f} mm^2 ({'bite envelope' if env else 'base outline'}), keep "
         f"{sum(k.area for k in dom.keep):.0f} mm^2; mass {mass * 1e3:.1f} g ({src}); hits on {contacts} mm")
     outline = Polygon([(p.X, p.Y) for p in (dom.profile.outer_wire().position_at(u)
@@ -84,7 +94,8 @@ def run(spec: Spec, spec_path: Path, out: Path, log: Callable[[str], None] = pri
         d.mkdir(parents=True, exist_ok=True)
         log(f"  MOI {frac:.3f} x {moi_ref * 1e3:.3f} g*m^2:")
         res = simp.optimize(dom, mat.E, mat.nu, mat.density, mass, moi_ref * frac, contacts,
-                            mesh_mm=t.mesh_mm, rmin_mm=t.rmin_mm, iters=t.iters, objective=t.objective, log=log)
+                            mesh_mm=t.mesh_mm, rmin_mm=t.rmin_mm, iters=t.iters, objective=t.objective,
+                            flat_weight=t.flat_weight, omega_rad_s=omega, case_forces_n=forces, log=log)
         density_png(res, d / "density.png", f"{spec.name} {tag}: {t.objective}, mass {mass * 1e3:.1f} g")
         np.savez_compressed(d / "density.npz", nodes=res.mesh.nodes, tris=res.mesh.tris, density=res.density,
                             keep=res.keep)

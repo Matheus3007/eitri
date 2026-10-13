@@ -26,6 +26,10 @@ def profile_png(result: dict, path: Path, title: str = "") -> None:
     for w in face.inner_wires():
         xy = _wire_xy(w, 200)
         ax.fill(xy[:, 0], xy[:, 1], color="white", ec=INK, lw=1)
+    if hasattr(weapon, "blind"):  # machined: blind pockets (material left under them) dashed
+        for f in weapon.blind():
+            xy = _wire_xy(f.outer_wire(), 300)
+            ax.fill(xy[:, 0], xy[:, 1], color="#cfd5db", ec=INK, lw=1, ls="--")
 
     r_tip = weapon.tip_radius_mm()
     t = np.linspace(0, 2 * math.pi, 400)

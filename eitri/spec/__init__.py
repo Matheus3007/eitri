@@ -166,6 +166,8 @@ class Topology(Strict):
     mass_kg: float | None = None  # default: the reference's mass (match_mass), else mass_kg.max, else the base's
     contacts_mm: list[float] | None = None  # hit patches; default [bite, 3, 8] like the reference cases
     objective: Literal["stress", "compliance"] = "stress"
+    flat_weight: float = 1.0  # weight of the out-of-plane hit in the stress objective (0 = in-plane only)
+    spinning: bool = True  # judge each hit while spinning, at the reference's first-yield force (needs [reference])
     mesh_mm: float = 1.5
     rmin_mm: float = 5.0  # density filter radius: the smallest member
     fillet_mm: float = 4.0  # pocket corner radius in the extracted design

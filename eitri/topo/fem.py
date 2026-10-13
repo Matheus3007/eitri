@@ -88,10 +88,14 @@ class Plane:
         self.cols = np.tile(dofs, (1, 6)).ravel()
         self.n = 2 * len(mesh.nodes)
 
-    def solve(self, Ee: np.ndarray, loads: np.ndarray, fixed: np.ndarray, return_solver: bool = False):
-        """loads (n_dof, k) -> displacements (n_dof, k); `fixed`: constrained dof ids. `return_solver`: also
+    def solve(self, Ee: np.ndarray, loads: np.ndarray, fixed: np.ndarray, return_solver: bool = False,
+              springs: sp.spmatrix | None = None):
+        """loads (n_dof, k) -> displacements (n_dof, k); `fixed`: constrained dof ids; `springs`: a constant
+        support stiffness added to K (e.g. a rigid part bearing along surface normals). `return_solver`: also
         return a function solving K v = rhs with the same factorization (adjoint solves)."""
         K = sp.csc_matrix(((self.ke * Ee[:, None, None]).ravel(), (self.rows, self.cols)), shape=(self.n, self.n))
+        if springs is not None:
+            K = (K + springs).tocsc()
         free = np.setdiff1d(np.arange(self.n), fixed)
         u = np.zeros_like(loads)
         lu = spla.splu(K[free][:, free].tocsc())
@@ -120,3 +124,35 @@ class Plane:
         eps = np.einsum("eij,ej->ei", self.B, u[self.dofs])
         s = Ee[:, None] * eps @ self.D.T
         return np.sqrt(s[:, 0] ** 2 - s[:, 0] * s[:, 1] + s[:, 1] ** 2 + 3 * s[:, 2] ** 2)
+
+
+def normal_springs(n_dof: int, nodes: np.ndarray, normals: np.ndarray, k: float) -> sp.csr_matrix:
+    """k n n^T on each node's (x, y) dofs: the node is held along its normal only (frictionless bearing)."""
+    r, c, v = [], [], []
+    for i, (nx, ny) in zip(nodes, normals):
+        d = [2 * i, 2 * i + 1]
+        for a, na in zip(d, (nx, ny)):
+            for b, nb in zip(d, (nx, ny)):
+                r.append(a)
+                c.append(b)
+                v.append(k * na * nb)
+    return sp.csr_matrix((v, (r, c)), shape=(n_dof, n_dof))
+
+
+def boundary_normals(mesh: TriMesh) -> dict[int, np.ndarray]:
+    """Outward unit normal at each boundary node (averaged over its boundary edges)."""
+    xy, c = mesh.nodes, mesh.centroids
+    e = np.concatenate([mesh.tris[:, [0, 1]], mesh.tris[:, [1, 2]], mesh.tris[:, [2, 0]]])
+    owner = np.tile(np.arange(len(mesh.tris)), 3)
+    key = np.sort(e, axis=1)
+    _, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    acc: dict[int, np.ndarray] = {}
+    for idx in np.nonzero(cnt[inv.ravel()] == 1)[0]:
+        a, b = e[idx]
+        d = xy[b] - xy[a]
+        nrm = np.array([d[1], -d[0]]) / np.linalg.norm(d)
+        if nrm @ (c[owner[idx]] - (xy[a] + xy[b]) / 2) > 0:
+            nrm = -nrm
+        for n_ in (a, b):
+            acc[int(n_)] = acc.get(int(n_), 0) + nrm
+    return {k: v / np.linalg.norm(v) for k, v in acc.items() if np.linalg.norm(v) > 1e-9}

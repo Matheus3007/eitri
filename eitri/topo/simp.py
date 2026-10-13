@@ -90,13 +90,19 @@ def project(z: np.ndarray, lo: np.ndarray, hi: np.ndarray, A: np.ndarray, b: np.
 def optimize(domain, E: float, nu: float, density: float, mass_kg: float, moi_kgm2: float | None,
              contacts_mm: list[float], weights: list[float] | None = None, mesh_mm: float = 1.5,
              rmin_mm: float = 5.0, iters: int = 160, move: float = 0.1, objective: str = "stress",
-             pnorm: float = 8.0, flat_weight: float = 1.0, flat_patch_mm: float = 8.0, check_grad: int = 0,
+             pnorm: float = 8.0, flat_weight: float = 1.0, flat_patch_mm: float = 8.0, omega_rad_s: float = 0.0,
+             case_forces_n: list[float] | None = None, check_grad: int = 0,
              log: Callable[[str], None] = print) -> TopoResult:
     """objective "stress": minimize the p-norm of the (relaxed, sqrt(x)-scaled) von Mises stress of each hit
     case -- i.e. maximize the force at first yield, what the reference comparison judges; "compliance":
     the classic stiffness objective (cheaper, but blind to stress concentrations: it thins hub necks).
     `flat_weight` > 0 adds the out-of-plane hit (DKT plate bending: a force normal to the plate within
-    `flat_patch_mm` of the tip, bolts clamped -- the reference's flat_hit case) to the stress objective."""
+    `flat_patch_mm` of the tip, bolts clamped -- the reference's flat_hit case) to the stress objective.
+    `omega_rad_s` > 0 with `case_forces_n` (one per contact, then the flat hit): each case is judged spinning,
+    as the reference comparison does -- von Mises of (centrifugal stress + the hit at that force; the
+    reference's first-yield forces are the natural choice). The centrifugal load rho omega^2 r follows the
+    density, like the inertia relief. Without it, pockets crowd the hub (the counterweight's pull goes through
+    it) and the out-of-plane case, which is judged spinning, fails there."""
     base = domain.base
     t = base.params.thickness_mm
     mesh = mesh_linear(domain.profile, mesh_mm)
@@ -134,16 +140,43 @@ def optimize(domain, E: float, nu: float, density: float, mass_kg: float, moi_kg
         fx, fy = f[0::2], f[1::2]
         torques.append(float((xy[:, 0] * fy - xy[:, 1] * fx).sum()))
         hit_loads.append(f)
-    hub_nodes = np.unique(np.concatenate([
-        bnd[np.hypot(*xy[bnd[:, 0]].T) <= domain.hub_hole_r][:, 0],
-        bnd[np.hypot(*xy[bnd[:, 1]].T) <= domain.hub_hole_r][:, 1]]))
-    fixed = np.concatenate([2 * hub_nodes, 2 * hub_nodes + 1])
-    # stress judged everywhere except right under each contact patch (denting) and at the rigid hub contact
-    hub_layer = cKDTree(xy[hub_nodes]).query(c, distance_upper_bound=1.5)[0] < 1.5
+    # supports like the evaluation (eitri/physics/fea/analysis.py): the hits are reacted by the pulley lock
+    # (or the bolts, without a lock) bearing on the hole walls that face the push -- stiff springs along the
+    # wall normal, bolt holes otherwise free -- so the hub ring's stress is seen; spinning by three tangential
+    # points at the bore. A rigid clamp of every hub hole hides exactly the stress that fails first.
+    from eitri.topo.fem import boundary_normals, normal_springs
+
+    normals = boundary_normals(mesh)
+    bn = np.array(sorted(normals))
+    nv = np.array([normals[i] for i in bn])
+    rc = base.center_cutout_r_mm()
+    on_center = np.hypot(xy[bn, 0], xy[bn, 1]) < rc + 1e-3
+    on_bolt = np.zeros(len(bn), bool)
+    for cx, cy, r in base.support_circles():
+        on_bolt |= np.abs(np.hypot(xy[bn, 0] - cx, xy[bn, 1] - cy) - r) < 1e-3
+    bearing_set = on_center if base.has_pulley_lock() else (on_center | on_bolt)
+    k_s = 1e4 * E * t
+    springs, bearing_nodes = [], []
+    for f in hit_loads:
+        f_dir = np.array([f[0::2].sum(), f[1::2].sum()])
+        f_dir /= np.linalg.norm(f_dir)  # the hit pushes the plate this way
+        touch = bearing_set & ((nv @ f_dir) > 0.1)
+        # plus a weak hold along the walls' tangents: removes the rotation mode (torque is inertia's)
+        S = normal_springs(2 * len(xy), bn[touch], nv[touch], k_s) + normal_springs(
+            2 * len(xy), bn[bearing_set], np.c_[-nv[bearing_set, 1], nv[bearing_set, 0]], k_s * 1e-6)
+        springs.append(S)
+        bearing_nodes.append(bn[touch])
+    r0 = base.bore_r_mm() or 10.0
+    cf_pts = [(int(np.argmin(np.hypot(xy[:, 0] - px, xy[:, 1] - py))), d) for px, py, d in
+              ((r0, 0, 1), (0, r0, 0), (-r0, 0, 1))]
+    S_cf = normal_springs(2 * len(xy), np.array([i for i, _ in cf_pts]),
+                          np.array([[0.0, 1.0] if d == 1 else [1.0, 0.0] for _, d in cf_pts]), k_s)
+    fixed = np.array([], dtype=int)
     judged = []
-    for cl in contacts_mm:
+    for k, cl in enumerate(contacts_mm):
         end = tip + (root - tip) * min(cl, face_len) / face_len
-        judged.append(~hub_layer & (dist_to_segment(c, tip, end) > max(0.75 * cl, 3.0)))
+        layer = cKDTree(xy[bearing_nodes[k]]).query(c, distance_upper_bound=1.5)[0] < 1.5
+        judged.append(~layer & (dist_to_segment(c, tip, end) > max(0.75 * cl, 3.0)))
     weights = np.asarray(weights or [1.0] * len(contacts_mm), float)
     plate = None
     if objective == "stress" and flat_weight > 0:
@@ -204,7 +237,13 @@ def optimize(domain, E: float, nu: float, density: float, mass_kg: float, moi_kg
         dq = np.where(xf > 0.1, 1.0, 3 * xf ** 2 / 0.01)
         m_e = rho_t * a * q
         inertia = float((m_e * r2).sum())
-        loads = np.zeros((fe.n, len(contacts_mm)))
+        spin = omega_rad_s > 0 and objective == "stress"
+        loads = np.zeros((fe.n, len(contacts_mm) + (1 if spin else 0)))
+        if spin:  # centrifugal: m omega^2 r, radial, lumped to the corners
+            for kk in range(3):
+                n_ = mesh.tris[:, kk]
+                np.add.at(loads[:, -1], 2 * n_, m_e / 3 * omega_rad_s**2 * xy[n_, 0] * 1e-3)
+                np.add.at(loads[:, -1], 2 * n_ + 1, m_e / 3 * omega_rad_s**2 * xy[n_, 1] * 1e-3)
         for k, (f, T) in enumerate(zip(hit_loads, torques)):
             alpha = T / inertia  # per newton of hit
             fin = np.zeros(fe.n)
@@ -214,7 +253,18 @@ def optimize(domain, E: float, nu: float, density: float, mass_kg: float, moi_kg
                 np.add.at(fin, 2 * n_, m_e / 3 * alpha * xy[n_, 1])
                 np.add.at(fin, 2 * n_ + 1, -m_e / 3 * alpha * xy[n_, 0])
             loads[:, k] = f + fin
-        u, again = fe.solve(Ee, loads, fixed, return_solver=True)
+        # each case with its own supports (the lock bears where that hit pushes it)
+        u = np.zeros_like(loads)
+        solvers = []
+        for k in range(loads.shape[1]):
+            S = springs[k] if k < len(springs) else S_cf
+            uk, ag = fe.solve(Ee, loads[:, [k]], fixed, return_solver=True, springs=S)
+            u[:, k] = uk[:, 0]
+            solvers.append(ag)
+
+        def again_k(k, rhs):
+            return solvers[k](rhs[:, None])[:, 0]
+
         dEe = p * xf ** (p - 1) * (1 - EMIN)
         tri = mesh.tris
         if objective == "compliance":
@@ -227,10 +277,14 @@ def optimize(domain, E: float, nu: float, density: float, mass_kg: float, moi_kg
             eta = np.sqrt(np.maximum(xf, 1e-9))  # stress relaxation: voids carry no stress
             deta = 0.5 / eta
             V = np.array([[1, -0.5, 0], [-0.5, 1, 0], [0, 0, 3]])
-            meas, dmeas = np.zeros(len(contacts_mm)), np.zeros((len(c), len(contacts_mm)))
+            nk = len(contacts_mm)
+            meas, dmeas = np.zeros(nk), np.zeros((len(c), nk))
             lam = np.zeros_like(u)
-            for k in range(len(contacts_mm)):
-                s0 = fe.solid_stress(u[:, k])  # (m, 3)
+            mu = np.zeros((fe.n, nk + 1))  # adjoints for the centrifugal state, per case (+ the plate case)
+            s_cf = fe.solid_stress(u[:, -1]) if spin else 0.0
+            for k in range(nk):
+                Fk = case_forces_n[k] if spin else 1.0
+                s0 = s_cf + Fk * fe.solid_stress(u[:, k])  # (m, 3): spinning + the hit at its force
                 vm0 = np.sqrt(np.maximum(np.einsum("ei,ij,ej->e", s0, V, s0), 1e-30))
                 vm = eta * vm0
                 J = judged[k]
@@ -243,16 +297,21 @@ def optimize(domain, E: float, nu: float, density: float, mass_kg: float, moi_kg
                 ge = np.einsum("ej,jk,eki->ei", w, fe.D, fe.B)  # (m, 6)
                 rhs = np.zeros(fe.n)
                 np.add.at(rhs, fe.dofs.ravel(), ge.ravel())
-                lam[:, k] = again(rhs)
+                lam[:, k] = again_k(k, Fk * rhs)
                 # - lam^T dK/dx u
                 ue, le = u[fe.dofs, k], lam[fe.dofs, k]
                 dmeas[:, k] -= dEe * np.einsum("ei,eij,ej->e", le, fe.ke, ue)
+                if spin:
+                    mu[:, k] = again_k(nk, rhs)
+                    dmeas[:, k] -= dEe * np.einsum("ei,eij,ej->e", mu[fe.dofs, k], fe.ke, u[fe.dofs, -1])
             lam_scale = 1.0
         if plate is not None:  # out-of-plane hit: p-norm of the surface stress, adjoint as in-plane
             V = np.array([[1, -0.5, 0], [-0.5, 1, 0], [0, 0, 3]])
             eta = np.sqrt(np.maximum(xf, 1e-9))
+            Fp = case_forces_n[nk] if spin else 1.0
             w_, again_p = plate.solve(Ee, plate_load, plate_fixed)
-            s0 = np.einsum("eij,ej->ei", plate_S, w_[plate.dofs])
+            # surface stress: spinning membrane stress + bending of the hit at its force
+            s0 = (s_cf if spin else 0.0) + Fp * np.einsum("eij,ej->ei", plate_S, w_[plate.dofs])
             vm0 = np.sqrt(np.maximum(np.einsum("ei,ij,ej->e", s0, V, s0), 1e-30))
             vm = eta * vm0
             pn = float((vm[plate_judged] ** pnorm).sum() ** (1 / pnorm))
@@ -262,10 +321,21 @@ def optimize(domain, E: float, nu: float, density: float, mass_kg: float, moi_kg
             ge = np.einsum("ej,eji->ei", wv, plate_S)
             rhs = np.zeros(plate.n)
             np.add.at(rhs, plate.dofs.ravel(), ge.ravel())
-            lam_p = again_p(rhs)
+            lam_p = again_p(Fp * rhs)
             d_pl -= dEe * np.einsum("ei,eij,ej->e", lam_p[plate.dofs], plate.ke, w_[plate.dofs])
+            if spin:
+                ge_cf = np.einsum("ej,jk,eki->ei", wv, fe.D, fe.B)
+                rhs_cf = np.zeros(fe.n)
+                np.add.at(rhs_cf, fe.dofs.ravel(), ge_cf.ravel())
+                mu[:, nk] = again_k(nk, rhs_cf)
+                d_pl -= dEe * np.einsum("ei,eij,ej->e", mu[fe.dofs, nk], fe.ke, u[fe.dofs, -1])
             meas = np.append(meas, pn)
             dmeas = np.hstack([dmeas, d_pl[:, None]])
+        if objective == "stress" and spin:  # the centrifugal load follows the density: + mu^T df_cf/dx
+            for k in range(dmeas.shape[1]):
+                mx_, my_ = mu[0::2, k], mu[1::2, k]
+                work = sum(mx_[tri[:, kk]] * xy[tri[:, kk], 0] + my_[tri[:, kk]] * xy[tri[:, kk], 1] for kk in range(3))
+                dmeas[:, k] += rho_t * a * dq / 3 * omega_rad_s**2 * 1e-3 * work
         if c0_box[0] is None:
             c0_box[0] = meas.copy()
         c0 = c0_box[0]

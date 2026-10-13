@@ -111,7 +111,7 @@ def _score(r: dict) -> float:
 
 
 def repair(space: Space, design: dict, result: dict, batch: Batch, log: Callable[[str], None] = print,
-           max_iter: int = 6, h: float = 0.04, trust: float = 0.12, goal: float = 0.005,
+           max_iter: int = 12, h: float = 0.04, trust: float = 0.12, goal: float = 0.005,
            climb: int = 2) -> LocalResult:
     """Newton/SQP on the check margins (see module doc). `climb`: objective steps after feasibility."""
     names = space.names
