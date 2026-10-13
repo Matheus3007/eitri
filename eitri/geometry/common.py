@@ -64,3 +64,11 @@ def corner_turn_deg(face: bd.Face, pt: tuple[float, float]) -> float:
         return 0.0
     cos = max(-1.0, min(1.0, dirs[0].dot(dirs[1])))
     return 180.0 - math.degrees(math.acos(cos))
+
+
+def to_nurbs(shape):
+    """Convert all curves/surfaces to NURBS. Offset curves (from 2D offsets) are silently dropped by the STEP
+    writer, so anything built with `offset` must go through this before it reaches a solid."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
+
+    return type(shape)(BRepBuilderAPI_NurbsConvert(shape.wrapped, True).Shape())

@@ -6,6 +6,8 @@ from dataclasses import asdict
 from eitri import materials
 from eitri.geometry.disc import Disc
 from eitri.geometry.fang import Fang
+from eitri.geometry.hook import Hook
+from eitri.geometry.step_part import StepPart
 from eitri.geometry.weapon import Check, Weapon
 from eitri.physics import drive, impact
 from eitri.physics.fea import analysis as fea
@@ -14,10 +16,16 @@ from eitri.physics.mass import mass_props
 from eitri.spec import Spec
 
 
-WEAPONS = {"disc": Disc, "fang": Fang}
+WEAPONS = {"disc": Disc, "fang": Fang, "hook": Hook, "step": StepPart}
+
+
+def single_tooth_bite_mm(spec: Spec) -> float:
+    return spec.context.closing_speed_mps * 2 * math.pi / drive.top_speed_rad_s(spec.drive) * 1e3
 
 
 def build_weapon(spec: Spec, design: dict[str, float]) -> Weapon:
+    if spec.weapon.type == "hook" and not design.get("envelope_bite_mm"):
+        design = {**design, "envelope_bite_mm": single_tooth_bite_mm(spec)}  # the outline follows the bite
     return WEAPONS[spec.weapon.type].from_dict(design, spec.weapon.spin)
 
 

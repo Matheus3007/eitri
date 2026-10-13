@@ -34,6 +34,14 @@ def rpm_to_rad(rpm: float) -> float:
     return rpm * 2 * math.pi / 60
 
 
+def top_speed_rad_s(drive: Drive) -> float:
+    """Weapon top speed (independent of inertia): fixed rpm, or loaded motor speed / reduction."""
+    if drive.rpm is not None:
+        return rpm_to_rad(drive.rpm)
+    m = drive.motor
+    return m.kv * 2 * math.pi / 60 * m.voltage * m.speed_efficiency / drive.ratio
+
+
 def simulate(drive: Drive, weapon_moi_kgm2: float) -> DriveResult:
     if drive.rpm is not None:
         return DriveResult(drive.rpm, rpm_to_rad(drive.rpm), None, None, None)

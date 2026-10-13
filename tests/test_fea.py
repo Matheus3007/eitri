@@ -46,3 +46,14 @@ def test_bigger_root_fillet_is_stronger(spec):
     weak = evaluate(spec, design={**d, "root_fillet_mm": 1.0})["stress"]["yield_force_kn"]
     strong = evaluate(spec, design={**d, "root_fillet_mm": 8.0})["stress"]["yield_force_kn"]
     assert strong > weak
+
+
+def test_mirrored_profile_meshes_counterclockwise():
+    from eitri.geometry.disc import Disc, DiscParams
+
+    face = Disc(DiscParams(od_mm=200, thickness_mm=8, pocket_count=0), spin="cw").profile()
+    m = mesh_profile(face, 10.0)
+    n, e = m.nodes, m.elems - 1
+    signed = ((n[e[:, 1], 0] - n[e[:, 0], 0]) * (n[e[:, 2], 1] - n[e[:, 0], 1])
+              - (n[e[:, 2], 0] - n[e[:, 0], 0]) * (n[e[:, 1], 1] - n[e[:, 0], 1]))
+    assert (signed > 0).all()

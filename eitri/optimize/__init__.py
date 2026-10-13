@@ -18,9 +18,10 @@ import optuna
 from eitri.evaluate import evaluate, public
 from eitri.geometry.disc import DiscParams
 from eitri.geometry.fang import FangParams
+from eitri.geometry.hook import HookParams
 from eitri.spec import Spec
 
-PARAM_CLASSES = {"disc": DiscParams, "fang": FangParams}
+PARAM_CLASSES = {"disc": DiscParams, "fang": FangParams, "hook": HookParams}
 
 
 def int_params(weapon_type: str) -> set[str]:

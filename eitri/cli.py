@@ -20,7 +20,7 @@ TEMPLATE = """\
 name = "{name}"
 
 [weapon]
-type = "{type}"         # fang (asymmetric single tooth, the default) | disc
+type = "{type}"         # hook (asymmetric single tooth, the default) | fang | disc | step (import a STEP)
 spin = "ccw"            # seen from +Z; teeth face the spin direction
 
 [material]
@@ -35,7 +35,7 @@ rpm = 8000              # weapon rpm, or replace with a motor:
 closing_speed_mps = 3.0
 opponent_mass_kg = 13.6
 restitution = 0.2
-contact_time_ms = 2.0   # hit pulse duration; impact results scale with it
+contact_time_ms = 0.71  # hit pulse; calibrated so a proven weapon (Rebot V3) sits at impact SF 1
 
 [constraints]
 mass_kg = {{ max = 4.5 }}
@@ -57,6 +57,29 @@ min_pocket_sweep_deg = 15
 {design}"""
 
 DESIGNS = {
+    "hook": """\
+od_mm = 230
+thickness_mm = 6.5
+face_depth_mm = 32      # radial depth of the impact face (>= the bite)
+hook_deg = 12
+root_fillet_mm = 3
+back_deg = 24           # tooth back: from the tip down to back_r_frac * R, this far behind the tip
+back_r_frac = 0.84
+hub_d_mm = 52
+spine_waist_deg = 102   # where the spine meets the hub, behind the tip
+cw_point_deg = 143      # counterweight point, behind the tip
+lobe_span_deg = 97
+gullet_waist_deg = 39   # where the gullet meets the hub, ahead of the face
+cw_size_frac = 0.72     # counterweight reach as a fraction of the bite envelope (balance comes from pockets)
+wall_mm = 8             # counterweight pocket wall
+arm_wall_mm = 11        # arm slot wall
+head_solid_mm = 30
+arm_pocket = 1
+bore_mm = 12
+bolt_count = 7
+bolt_d_mm = 5.3
+bolt_pcd_mm = 36.5
+""",
     "fang": """\
 od_mm = 300
 thickness_mm = 12
@@ -136,6 +159,22 @@ def _summary(r: dict) -> str:
     return line
 
 
+def export_step_verified(solid, path: Path) -> dict:
+    """Export, re-import and compare volumes: a STEP that silently lost geometry must never ship."""
+    from eitri.geometry.common import to_nurbs
+
+    for attempt, shape in (("direct", solid), ("nurbs", None)):
+        if shape is None:
+            shape = to_nurbs(solid)
+        bd.export_step(shape, str(path))
+        back = bd.import_step(str(path)).volume
+        err = abs(back - solid.volume) / solid.volume
+        if err < 1e-3:
+            return {"ok": True, "path": str(path), "volume_error": err, "method": attempt}
+    path.rename(path.with_suffix(".BROKEN.step"))
+    return {"ok": False, "path": str(path.with_suffix(".BROKEN.step")), "volume_error": err}
+
+
 def fixed_spec_toml(spec: spec_mod.Spec, design: dict, material: str) -> str:
     """The spec with every design value fixed and a single material: ready for `eval`."""
     d = spec.model_dump(mode="json", exclude_none=True)
@@ -158,7 +197,7 @@ def _write_outputs(run: Path | None, spec: spec_mod.Spec, spec_path: Path, resul
         render.stress_png(r, run / f"stress_{tag}.png", materials.get(tag).yield_)
     good = next((r for r in results if "error" not in r), None)
     if good:
-        bd.export_step(good["_solid"], str(run / "weapon.step"))
+        out["step_export"] = export_step_verified(good["_solid"], run / "weapon.step")
         (run / "spec_fixed.toml").write_text(fixed_spec_toml(spec, good["design"], good["material"]))
     (run / "report.json").write_text(json.dumps(out, indent=2))
     out["run_dir"] = str(run)
@@ -167,7 +206,7 @@ def _write_outputs(run: Path | None, spec: spec_mod.Spec, spec_path: Path, resul
 
 @app.command()
 def new(project_dir: Path, name: str = typer.Option(None, help="defaults to the directory name"),
-        weapon: str = typer.Option("fang", "--type", help="fang | disc")):
+        weapon: str = typer.Option("hook", "--type", help="hook | fang | disc")):
     """Create a project directory with a template spec.toml."""
     if weapon not in DESIGNS:
         raise typer.BadParameter(f"--type must be one of {sorted(DESIGNS)}")

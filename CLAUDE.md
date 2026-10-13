@@ -2,7 +2,8 @@
 
 Code-first tool to design combat-robot spinner weapons from a text spec, evaluate them (mass, MOI, energy,
 bite, spin-up, impact loads, FEA stress), optimize them, and export STEP.
-Weapon types: `fang` (asymmetric single-tooth bar, the default and preferred style) and `disc`.
+Weapon types: `hook` (asymmetric single-tooth, modelled on the user's Rebot V3 weapon; the default and
+preferred style), `fang` (older asymmetric bar), `disc`, and `step` (evaluate an existing STEP part).
 Drums/eggbeaters come later as new `Weapon` subclasses.
 Plan/roadmap: `/home/tths/.claude/plans/we-are-going-to-vectorized-dragonfly.md`.
 `projects/` is the local, git-ignored workspace for real weapons (never pushed); `examples/` holds
@@ -12,6 +13,9 @@ reference specs that are tracked.
 - **Looks are a requirement, not a nice-to-have**: every output must read as an aggressive, well-made
   weapon. Asymmetric single-tooth designs are preferred over symmetric round discs. Enforce looks through
   the parametrization and `[style]` constraints, and always render + look at a design before presenting it.
+  Reference look: Rebot V3's `GanchoUnidente` (in the user's CAD, see `projects/rebot/spec.toml`): one
+  continuous S/hook outline, single hooked tooth, comma counterweight with a sharp point, pockets with
+  constant walls that follow the outline. Thin-rim "hoop" counterweights are NOT acceptable.
 - Everything must be drivable from text/CLI and inspectable (JSON + PNG).
 
 ## Running
@@ -42,21 +46,32 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
 ## Physics model (know its limits)
 - Mass/MOI: exact from the B-rep. Drive: BLDC with current limit, ODE spin-up.
 - Hit: tooth = point mass I/R^2 at tip speed vs opponent at rest, restitution e -> impulse J;
-  equivalent static peak force = (pi/2) J / contact_time (half-sine). `contact_time_ms` = 2 ms default
-  (the user's team used 2 ms windows in explicit impact sims) and is the least certain input.
+  equivalent static peak force = (pi/2) J / contact_time (half-sine). `contact_time_ms` = 0.71 ms default,
+  calibrated on Rebot V3 (Hardox 500, 6S 880/sqrt3 kV, 1.5:1, survives): at 0.71 ms its body is exactly at
+  first yield, so impact SF >= 1 means "at least as robust as a proven weapon". (The user's team's explicit
+  sims used a 2 ms total window, so the true pulse is between 0.71 and 2 ms.)
+- Hook geometry: outline drawn first inside the single-tooth bite envelope r(phi) = R - bite*phi/360 (the
+  counterweight can never be a second tooth), sized by `cw_size_frac`, then balanced by Newton iteration on
+  the counterweight pocket's span + center (pockets = outline inset by a wall, masked to sectors).
 - FEA (CalculiX plane stress, CPS6): `centrifugal` (3 tangential bore constraints) and `impact`
   (contact force on the outer `bite` of the face as consistent nodal loads, torque reacted by d'Alembert
   inertial loads, net force by the bolt holes). Stress split into zones: `contact` (tooth-tip denting,
   excluded), `support`, `body`. `yield_force_kn` = hit force at first body yield while spinning
   (independent of contact time); `impact_safety_factor` = yield force / estimated peak force.
 - ccx 2.17 segfaults on *DLOAD pressure at some CPS6 edges touching sharp tips: use nodal CLOADs.
+- Mirrored (CW) faces mesh clockwise; the mesher flips elements to CCW (ccx: "nonpositive jacobian").
+- OCC offset curves are silently dropped by the STEP writer: anything built with `bd.offset` goes through
+  `common.to_nurbs`, and every export is verified by re-import (`step_export` in report.json).
+- build123d `fillet()` finds its target via the vertices' topo_parent: rebuild a face from its wires before
+  filleting a boolean result, or it fillets the boolean's operand.
 - Center of percussion is intentionally not an objective: a balanced rotor's axle always reacts the full
   impulse. Imbalance is a hard constraint; we report impulse / peak force / inward force fraction.
 
 ## Layout
 - `eitri/spec/` pydantic spec models (TOML). `eitri/materials/materials.toml` material data.
-- `eitri/geometry/weapon.py` abstract `Weapon`; `fang.py` (asym bar, counterweight solved for balance);
-  `disc.py` (n-tooth disc, round or swept pockets); `common.py` 2D helpers.
+- `eitri/geometry/weapon.py` abstract `Weapon`; `hook.py` (asym, bite envelope + pocket balance);
+  `fang.py` (asym bar, counterweight arm solved for balance); `disc.py` (n-tooth disc, round or swept
+  pockets); `step_part.py` (imported STEP: auto-detects tip, impact face, hook, bolts); `common.py` helpers.
 - `eitri/physics/` `mass.py`, `drive.py`, `impact.py`, `fea/{mesh,ccx,analysis}.py`.
 - `eitri/evaluate.py` spec + design -> metrics + checks (shared by CLI and optimizer). Invalid parameter
   combos return `{"ok": False, "error": ...}` instead of raising.

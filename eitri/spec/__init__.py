@@ -20,7 +20,7 @@ class Strict(BaseModel):
 
 
 class Weapon(Strict):
-    type: Literal["fang", "disc"] = "fang"  # fang = asymmetric single tooth; "drum"/"eggbeater" later
+    type: Literal["hook", "fang", "disc", "step"] = "hook"  # hook/fang = asymmetric single tooth; step = imported
     spin: Literal["ccw", "cw"] = "ccw"  # seen from +Z; teeth face the spin direction
 
 
@@ -68,9 +68,11 @@ class Context(Strict):
     closing_speed_mps: float = 3.0
     opponent_mass_kg: float = 13.6
     restitution: float = 0.2
-    # Hit pulse duration -> equivalent static peak force. 2 ms matches explicit impact sims the user's team ran;
-    # it is the least certain input: impact results scale with it (see stress.min_elastic_contact_time_ms).
-    contact_time_ms: float = 2.0
+    # Hit pulse duration -> equivalent static peak force; the least certain input (impact results scale with it).
+    # 0.71 ms is calibrated on Rebot V3's GanchoUnidente (Hardox 500, proven to survive): at this pulse its body
+    # is exactly at first yield, so impact SF >= 1 means "at least as robust as a weapon known to survive".
+    # The user's team's explicit sims used a 2 ms total window, so the real pulse is between 0.71 and 2 ms.
+    contact_time_ms: float = 0.71
 
 
 class Bound(Strict):

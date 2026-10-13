@@ -61,7 +61,14 @@ def mesh_profile(face: bd.Face, size_mm: float, min_size_mm: float | None = None
             elems = renum[tri6[0].astype(np.int64)].reshape(-1, 6)
         finally:
             gmsh.finalize()
-    return Mesh2D(nodes=xy[order], elems=elems)
+    nodes = xy[order]
+    # Mirrored (e.g. CW-spin) faces have a -Z normal and mesh clockwise; CalculiX needs CCW elements.
+    n, e = nodes, elems - 1
+    signed = ((n[e[:, 1], 0] - n[e[:, 0], 0]) * (n[e[:, 2], 1] - n[e[:, 0], 1])
+              - (n[e[:, 2], 0] - n[e[:, 0], 0]) * (n[e[:, 1], 1] - n[e[:, 0], 1]))
+    flip = signed < 0
+    elems[flip] = elems[flip][:, [0, 2, 1, 5, 4, 3]]
+    return Mesh2D(nodes=nodes, elems=elems)
 
 
 # --- geometric selection ----------------------------------------------------------------------

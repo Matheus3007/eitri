@@ -44,3 +44,14 @@ uts = 1790
 elongation_pct = 10
 charpy_j = 20
 hardness = "48-51 HRC"
+
+[HARDOX500]
+description = "SSAB Hardox 500 wear plate, through-hardened 470-530 HBW, as supplied"
+density = 7850
+E = 210000
+nu = 0.29
+yield = 1400
+uts = 1550
+elongation_pct = 8
+charpy_j = 30
+hardness = "470-530 HBW (~50 HRC)"
