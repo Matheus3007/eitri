@@ -66,7 +66,7 @@ def run(weapon, E_mpa: float, nu: float, density: float, omega_rad_s: float, pea
     supports = weapon.support_circles()
 
     # --- centrifugal: 3 tangential constraints on the bore (or near the center) --------------------
-    r0 = max(weapon.params.bore_mm / 2, 1e-3) if getattr(weapon.params, "bore_mm", 0) else 10.0
+    r0 = weapon.bore_r_mm() or 10.0
     fix_cf = {_nearest(mesh, r0, 0): (2,), _nearest(mesh, 0, r0): (1,), _nearest(mesh, -r0, 0): (2,)}
     cases = [LoadCase("centrifugal", omega_rad_s=omega_rad_s, fixed=fix_cf)]
 

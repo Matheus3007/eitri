@@ -52,6 +52,7 @@ maximize = "energy"     # energy | moi | effective_mass
 min_hook_deg = 5
 max_root_fillet_ratio = 0.4
 min_pocket_sweep_deg = 15
+min_wall_frac = 0.08    # pocket walls >= 8% of the tip radius: no thin-rim hoops
 
 [design]                # number = fixed, [min, max] = free for the optimizer (eval uses the midpoint)
 {design}"""
@@ -67,18 +68,21 @@ back_deg = 24           # tooth back: from the tip down to back_r_frac * R, this
 back_r_frac = 0.84
 hub_d_mm = 52
 spine_waist_deg = 102   # where the spine meets the hub, behind the tip
-cw_point_deg = 143      # counterweight point, behind the tip
+cw_point_deg = 143      # counterweight point, behind the tip (nominal: balance turns the lobe a little)
 lobe_span_deg = 97
 gullet_waist_deg = 39   # where the gullet meets the hub, ahead of the face
-cw_size_frac = 0.72     # counterweight reach as a fraction of the bite envelope (balance comes from pockets)
-wall_mm = 8             # counterweight pocket wall
+cw_size_frac = 0.8      # counterweight reach as a fraction of the bite envelope (balance comes from pockets)
+wall_mm = 9.5           # thinnest counterweight-pocket wall; balance solves the actual (constant) wall
 arm_wall_mm = 11        # arm slot wall
+pocket_fillet_mm = 7    # every pocket corner is this radius
 head_solid_mm = 30
 arm_pocket = 1
-bore_mm = 12
 bolt_count = 7
 bolt_d_mm = 5.3
 bolt_pcd_mm = 36.5
+lock_d_mm = 29          # lobed pulley-lock cutout around the bolts (Rebot V3); 0 = plain bore_mm
+lock_boss_d_mm = 10.5
+lock_fillet_mm = 1
 """,
     "fang": """\
 od_mm = 300
@@ -159,20 +163,32 @@ def _summary(r: dict) -> str:
     return line
 
 
-def export_step_verified(solid, path: Path) -> dict:
-    """Export, re-import and compare volumes: a STEP that silently lost geometry must never ship."""
-    from eitri.geometry.common import to_nurbs
+def export_step_verified(solid, path: Path, plate=None) -> dict:
+    """Export, re-import and compare: a STEP that silently lost geometry must never ship.
 
+    Plates compare the re-imported top face's area with the profile's (exact integration, 1e-6): a missing
+    bolt hole is 0.3% of a beetleweight hook, below the ~0.1% noise of OCC's default volume integration on
+    B-spline side faces, which therefore only serves as a gross check (0.5%)."""
+    from eitri.geometry.common import face_props, to_nurbs
+
+    def top_area(shape) -> float:
+        tops = [f for f in shape.faces() if f.geom_type == bd.GeomType.PLANE and f.normal_at().Z > 0.999]
+        return max(face_props(f).Mass() for f in tops) if tops else 0.0
+
+    want = face_props(plate[0]).Mass() if plate is not None else None
     for attempt, shape in (("direct", solid), ("nurbs", None)):
         if shape is None:
             shape = to_nurbs(solid)
         bd.export_step(shape, str(path))
-        back = bd.import_step(str(path)).volume
-        err = abs(back - solid.volume) / solid.volume
-        if err < 1e-3:
-            return {"ok": True, "path": str(path), "volume_error": err, "method": attempt}
+        back = bd.import_step(str(path))
+        err = abs(back.volume - solid.volume) / solid.volume
+        area_err = abs(top_area(back) - want) / want if want else 0.0
+        if err < 5e-3 and area_err < 1e-6:
+            return {"ok": True, "path": str(path), "volume_error": err, "profile_area_error": area_err,
+                    "method": attempt}
     path.rename(path.with_suffix(".BROKEN.step"))
-    return {"ok": False, "path": str(path.with_suffix(".BROKEN.step")), "volume_error": err}
+    return {"ok": False, "path": str(path.with_suffix(".BROKEN.step")), "volume_error": err,
+            "profile_area_error": area_err}
 
 
 def fixed_spec_toml(spec: spec_mod.Spec, design: dict, material: str) -> str:
@@ -197,7 +213,7 @@ def _write_outputs(run: Path | None, spec: spec_mod.Spec, spec_path: Path, resul
         render.stress_png(r, run / f"stress_{tag}.png", materials.get(tag).yield_)
     good = next((r for r in results if "error" not in r), None)
     if good:
-        out["step_export"] = export_step_verified(good["_solid"], run / "weapon.step")
+        out["step_export"] = export_step_verified(good["_solid"], run / "weapon.step", good["_weapon"].plate())
         (run / "spec_fixed.toml").write_text(fixed_spec_toml(spec, good["design"], good["material"]))
     (run / "report.json").write_text(json.dumps(out, indent=2))
     out["run_dir"] = str(run)
@@ -258,6 +274,7 @@ def optimize_cmd(
     trials: int = typer.Option(200, help="number of candidate designs to evaluate"),
     workers: int = typer.Option(max(1, min(8, (os.cpu_count() or 2) - 1)), help="parallel processes"),
     seed: int = typer.Option(0),
+    verify_top: int = typer.Option(5, help="fine-mesh check up to this many top candidates"),
 ):
     """Optimize the [design] ranges for the [objective] under [constraints]; verify the best on a fine mesh."""
     from eitri.optimize import optimize
@@ -273,10 +290,20 @@ def optimize_cmd(
     if best is None or "error" in best:
         typer.echo("no valid design found; see history.jsonl")
         raise typer.Exit(1)
-    verify = evaluate(spec, design=best["design"], material=best["material"], fine=True,
-                      keep_fea_dir=run / "best" / "fea")
+    # Verify the top candidates on the fine mesh; the winner is the best one that still passes there.
+    ranked = sorted((h for h in res.history if h["ok"]), key=lambda h: -h["objective"])[:verify_top] or [best]
+    verified = []
+    for cand in ranked:
+        v = evaluate(spec, design=cand["design"], material=cand["material"], fine=True,
+                     keep_fea_dir=run / "best" / "fea")
+        verified.append((cand, v))
+        typer.echo(f"  fine-mesh check trial {cand['trial']}: {spec.objective.maximize} "
+                   f"{cand.get('objective', float('nan')):.4g} -> {'ok' if v.get('ok') else 'FAIL ' + ','.join(v.get('failed', [v.get('error', '')]))}")
+        if v.get("ok"):
+            break
+    best, verify = next(((c, v) for c, v in verified if v.get("ok")), verified[0])
     (run / "best").mkdir(exist_ok=True)
-    out = _write_outputs(run / "best", spec, spec_path, [verify])
+    _write_outputs(run / "best", spec, spec_path, [verify])
     b0 = res.baseline
     summary = {
         "feasible_found": res.best_feasible,
@@ -284,6 +311,8 @@ def optimize_cmd(
         "n_feasible": sum(h["ok"] for h in res.history),
         "baseline": {k: b0.get(k) for k in ("ok", "objective", "mass_kg", "sf_spinning", "sf_impact", "failed")},
         "best_trial": best["trial"],
+        "fine_mesh_checks": [{"trial": c["trial"], "objective": c.get("objective"), "ok": bool(v.get("ok")),
+                              "failed": v.get("failed", [v.get("error")])} for c, v in verified],
         "best_verified_fine_mesh": _clean(public(verify)),
         "best_spec": str(run / "best" / "spec_fixed.toml"),
     }

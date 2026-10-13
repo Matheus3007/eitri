@@ -57,6 +57,15 @@ class Weapon(ABC):
         """Radius below which material is 'body' (never excluded as tooth-tip denting in the FEA)."""
         return self.tip_radius_mm() - self.tooth_depth_mm()
 
+    def plate(self) -> tuple[bd.Face, float] | None:
+        """(profile, thickness) if the solid is the profile extruded symmetrically about z=0 (exact mass
+        properties come from the 2D profile then); None for anything else."""
+        return self.profile(), self.params.thickness_mm
+
+    def bore_r_mm(self) -> float:
+        """Smallest radius of the center cutout (where the centrifugal FEA case pins the part)."""
+        return getattr(self.params, "bore_mm", 0.0) / 2
+
     @abstractmethod
     def geometric_checks(self, min_ligament_mm: float) -> list[Check]:
         """Cheap analytic sanity checks on the parameters (ligaments, fits, angles)."""

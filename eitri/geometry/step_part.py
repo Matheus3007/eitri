@@ -174,8 +174,33 @@ class StepPart(Weapon):
                 "hook_deg": self.hook_deg(), "bore_min_d_mm": self.params.bore_mm,
                 "n_bolts": len(self.support_circles())}
 
-    def geometric_checks(self, min_ligament_mm: float) -> list[Check]:
+    def _plate_error(self) -> float:
         extruded = self._profile.area * self.params.thickness_mm
-        err = abs(extruded - self._solid.volume) / self._solid.volume
+        return abs(extruded - self._solid.volume) / self._solid.volume
+
+    def _is_prism(self) -> bool:
+        """Exactly the profile extruded along Z: every face is a cap at z = +-t/2 or a wall with horizontal
+        normals, and the two caps are the same area (no chamfers, counterbores, steps)."""
+        from eitri.geometry.common import face_props
+
+        t, caps = self.params.thickness_mm, {1: 0.0, -1: 0.0}
+        for f in self._solid.faces():
+            if f.geom_type == bd.GeomType.PLANE and abs(abs(f.normal_at().Z) - 1) < 1e-9:
+                if abs(abs(f.center().Z) - t / 2) > 1e-6:
+                    return False
+                caps[round(f.normal_at().Z)] += face_props(f).Mass()
+                continue
+            for u in (0.1, 0.5, 0.9):
+                for v in (0.1, 0.5, 0.9):
+                    if abs(f.normal_at(u, v).Z) > 1e-6:
+                        return False
+        return abs(caps[1] - caps[-1]) <= 1e-6 * caps[1]
+
+    def plate(self):
+        # Exact-profile mass properties only if it really is a plate.
+        return (self._profile, self.params.thickness_mm) if self._is_prism() else None
+
+    def geometric_checks(self, min_ligament_mm: float) -> list[Check]:
+        err = self._plate_error()
         return [Check("flat_plate", err < 0.03, err, 0.03,
                       "volume vs top-face area x thickness; 2D FEA assumes a flat plate")]

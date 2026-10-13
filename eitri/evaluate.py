@@ -4,6 +4,7 @@ import math
 from dataclasses import asdict
 
 from eitri import materials
+from eitri.geometry.common import worst_concave_corner
 from eitri.geometry.disc import Disc
 from eitri.geometry.fang import Fang
 from eitri.geometry.hook import Hook
@@ -50,16 +51,19 @@ def evaluate(spec: Spec, design: dict[str, float] | None = None, material: str |
     except Exception as e:  # invalid parameter combination: report it, don't crash the loop
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "design": design, "material": mat.name}
     checks.append(Check("solid_valid", solid.is_valid))
+    sharp = worst_concave_corner(weapon.profile())
+    checks.append(Check("sharp_corners", sharp is None or sharp.turn_deg <= c.max_sharp_corner_deg,
+                        sharp.turn_deg if sharp else 0.0, c.max_sharp_corner_deg,
+                        f"sharpest re-entrant corner (at {sharp.x:.1f}, {sharp.y:.1f} mm); stress raiser unless "
+                        "filleted" if sharp else "no re-entrant corners"))
 
-    mp = mass_props(solid, mat.density)
+    mp = mass_props(solid, mat.density, weapon.plate())
     dr = drive.simulate(spec.drive, mp.moi_kgm2)
-    p = weapon.params
     hit = impact.analyze(mp.moi_kgm2, dr.top_rad_s, weapon.tip_radius_mm(), weapon.n_teeth(),
                          weapon.tooth_depth_mm(), weapon.hook_deg(), spec.context)
 
     # Analytic cross-check: solid annulus out to the tip radius (ignores teeth/pockets).
-    hoop = lame_bore_hoop_mpa(mat.density, mat.nu, dr.top_rad_s, getattr(p, "bore_mm", 0.0) / 2,
-                              weapon.tip_radius_mm())
+    hoop = lame_bore_hoop_mpa(mat.density, mat.nu, dr.top_rad_s, weapon.bore_r_mm(), weapon.tip_radius_mm())
     lame = {"centrifugal_bore_hoop_mpa": hoop}
     fea_run = None
     if spec.analysis.fea and CCX:

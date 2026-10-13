@@ -21,7 +21,7 @@ def fang(spin="ccw", **kw) -> Fang:
 ])
 def test_counterweight_balances_the_fang(kw):
     f = fang(**kw)
-    mp = mass_props(f.solid(), 7850)
+    mp = mass_props(f.solid(), 7850, f.plate())
     assert f.solid().is_valid
     assert mp.static_imbalance_gmm < 2.0  # g*mm, a few hundredths of a gram at the rim
     assert f.derived()["balance_residual_mm3"] < Fang.BALANCE_TOL_MM3

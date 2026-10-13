@@ -43,9 +43,27 @@ def violations(result: dict) -> list[float]:
     return out
 
 
+SF_CHECKS = ("safety_factor_spinning", "impact_safety_factor")
+
+
+def apply_margin(result: dict, margin: float) -> dict:
+    """Raise the safety-factor limits by `margin` (coarse mesh reads a few % optimistic vs the fine mesh the
+    winner is verified on), re-judging ok/failed."""
+    if "error" in result or margin <= 0:
+        return result
+    for c in result["checks"]:
+        if c["name"] in SF_CHECKS and c["value"] is not None and c["limit"] is not None:
+            c["limit"] *= 1 + margin
+            c["ok"] = c["value"] >= c["limit"]
+            c["detail"] = (c.get("detail") or "") + f" (limit +{margin:.0%} coarse-mesh margin)"
+    result["failed"] = [c["name"] for c in result["checks"] if not c["ok"]]
+    result["ok"] = not result["failed"]
+    return result
+
+
 def _worker(spec: Spec, design: dict, material: str) -> dict:
     try:
-        return public(evaluate(spec, design=design, material=material))
+        return apply_margin(public(evaluate(spec, design=design, material=material)), spec.analysis.coarse_margin)
     except Exception as e:  # never let one bad candidate kill the run
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "design": design, "material": material}
 

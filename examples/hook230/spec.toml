@@ -5,7 +5,7 @@ type = "hook"         # hook (asymmetric single tooth, the default) | fang | dis
 spin = "ccw"            # seen from +Z; teeth face the spin direction
 
 [material]
-name = "hook230"
+name = "AR500"          # or: candidates = ["AR500", "S7", "4340"]  (see `eitri materials`)
 
 [drive]
 rpm = 8000              # weapon rpm, or replace with a motor:
@@ -33,6 +33,7 @@ maximize = "energy"     # energy | moi | effective_mass
 min_hook_deg = 5
 max_root_fillet_ratio = 0.4
 min_pocket_sweep_deg = 15
+min_wall_frac = 0.08    # pocket walls >= 8% of the tip radius: no thin-rim hoops
 
 [design]                # number = fixed, [min, max] = free for the optimizer (eval uses the midpoint)
 od_mm = 230
@@ -44,15 +45,18 @@ back_deg = 24           # tooth back: from the tip down to back_r_frac * R, this
 back_r_frac = 0.84
 hub_d_mm = 52
 spine_waist_deg = 102   # where the spine meets the hub, behind the tip
-cw_point_deg = 143      # counterweight point, behind the tip
+cw_point_deg = 143      # counterweight point, behind the tip (nominal: balance turns the lobe a little)
 lobe_span_deg = 97
 gullet_waist_deg = 39   # where the gullet meets the hub, ahead of the face
-cw_size_frac = 0.72     # counterweight reach as a fraction of the bite envelope (balance comes from pockets)
-wall_mm = 8             # counterweight pocket wall
+cw_size_frac = 0.8      # counterweight reach as a fraction of the bite envelope (balance comes from pockets)
+wall_mm = 9.5           # thinnest counterweight-pocket wall; balance solves the actual (constant) wall
 arm_wall_mm = 11        # arm slot wall
+pocket_fillet_mm = 7    # every pocket corner is this radius
 head_solid_mm = 30
 arm_pocket = 1
-bore_mm = 12
 bolt_count = 7
 bolt_d_mm = 5.3
 bolt_pcd_mm = 36.5
+lock_d_mm = 29          # lobed pulley-lock cutout around the bolts (Rebot V3); 0 = plain bore_mm
+lock_boss_d_mm = 10.5
+lock_fillet_mm = 1

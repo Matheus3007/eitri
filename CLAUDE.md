@@ -16,6 +16,11 @@ reference specs that are tracked.
   Reference look: Rebot V3's `GanchoUnidente` (in the user's CAD, see `projects/rebot/spec.toml`): one
   continuous S/hook outline, single hooked tooth, comma counterweight with a sharp point, pockets with
   constant walls that follow the outline. Thin-rim "hoop" counterweights are NOT acceptable.
+- **Manufacturable, like the real part**: every re-entrant (concave) corner is filleted -- sharp inside corners
+  are crack starters (`sharp_corners` check, all weapon types); only convex points (tip, counterweight point)
+  may be sharp. The hub carries the pulley lock: 29 mm cutout with a 10.5 mm boss around each of the 7 bolts,
+  R1 fillets (Rebot's pattern, `lock_*` params). When copying a reference design, compare *every* feature
+  (hub pattern, fillets), not just the outline.
 - Everything must be drivable from text/CLI and inspectable (JSON + PNG).
 
 ## Running
@@ -51,8 +56,15 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   first yield, so impact SF >= 1 means "at least as robust as a proven weapon". (The user's team's explicit
   sims used a 2 ms total window, so the true pulse is between 0.71 and 2 ms.)
 - Hook geometry: outline drawn first inside the single-tooth bite envelope r(phi) = R - bite*phi/360 (the
-  counterweight can never be a second tooth), sized by `cw_size_frac`, then balanced by Newton iteration on
-  the counterweight pocket's span + center (pockets = outline inset by a wall, masked to sectors).
+  counterweight can never be a second tooth), sized by `cw_size_frac`. Balance: the lobe is hollowed into a
+  constant-wall shell; the wall is solved (regula falsi, >= `wall_mm`) to remove the excess moment, and the
+  lobe is turned within the envelope (`lobe_turn_deg`, secant, <= `max_lobe_turn_deg`) to cancel the sideways
+  remainder. Pockets are rounded by morphological opening (shrink/grow by `pocket_fillet_mm`), which is
+  continuous in the parameters; corner-by-corner fillets are not (they flip as a cut sweeps past a corner)
+  and broke the Newton. `BalanceError` messages say which way the outline is off (tooth-heavy / too heavy /
+  lobe hits a waist). ~2 s per build. The arm slot has its own `arm_fillet_mm`; if a requested slot can't
+  fit (walls + fillets wider than the arm) `style_arm_slot` fails -- the optimizer otherwise drops it
+  silently, since a solid arm scores a few J better.
 - FEA (CalculiX plane stress, CPS6): `centrifugal` (3 tangential bore constraints) and `impact`
   (contact force on the outer `bite` of the face as consistent nodal loads, torque reacted by d'Alembert
   inertial loads, net force by the bolt holes). Stress split into zones: `contact` (tooth-tip denting,
@@ -64,6 +76,18 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   `common.to_nurbs`, and every export is verified by re-import (`step_export` in report.json).
 - build123d `fillet()` finds its target via the vertices' topo_parent: rebuild a face from its wires before
   filleting a boolean result, or it fillets the boolean's operand.
+- OCC integration: the default (fixed-order) `BRepGProp` misses B-spline faces by ~1e-4 relative (tens of
+  mm^3 of first moment; booleans stop adding up), and 3D volume integration of B-spline side faces is off by
+  ~9 g*mm of imbalance, while its epsilon variant returns wrong volumes. So: `common.face_props` (adaptive,
+  eps 1e-9, checked against a 320k-point polygon) everywhere, and mass properties of plates come from the 2D
+  profile extruded analytically (`Weapon.plate()`; imported parts only if they are exact prisms). STEP
+  export is verified by the re-imported top-face area (1e-6), not by volume.
+- OCC 2D offsets fail on B-splines with an internal C0 kink and on some open-curve distances: use
+  `common.offset_pieces` (splits at kinks, returns all pieces or []) on closed faces.
+- CalculiX 2.17 multithreaded runs are nondeterministic (~1% stress scatter between identical runs):
+  `[analysis] threads = 1` (default); parallelism comes from evaluating candidates in parallel.
+- Optimizer: SF limits get `[analysis] coarse_margin` (5%) on the coarse mesh; at the end the top
+  `--verify-top` candidates are re-run on the fine mesh and the best that still passes wins.
 - Center of percussion is intentionally not an objective: a balanced rotor's axle always reacts the full
   impulse. Imbalance is a hard constraint; we report impulse / peak force / inward force fraction.
 

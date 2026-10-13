@@ -38,6 +38,39 @@ def test_offset_mass_gives_imbalance_and_parallel_axis():
     assert mp.moi_kgm2 == pytest.approx(i_cg + mp.mass_kg * 0.05**2, rel=1e-6)
 
 
+def test_plate_mass_props_match_the_solid_and_closed_form():
+    # (profile, thickness) route: exact 2D integration, extruded analytically
+    r1, r2, t = 20.0, 100.0, 10.0
+    prof = (bd.Circle(r2) - bd.Circle(r1)).faces()[0]
+    solid = bd.extrude(prof, amount=t / 2, both=True).solids()[0]
+    a, b = mass_props(solid, RHO), mass_props(solid, RHO, (prof, t))
+    m = RHO * math.pi * (r2**2 - r1**2) * t * 1e-9
+    assert b.mass_kg == pytest.approx(m, rel=1e-9)
+    assert b.moi_kgm2 == pytest.approx(0.5 * m * ((r1 * 1e-3) ** 2 + (r2 * 1e-3) ** 2), rel=1e-9)
+    for i in range(3):
+        for j in range(3):
+            assert b.moi_tensor_cg_kgm2[i][j] == pytest.approx(a.moi_tensor_cg_kgm2[i][j], rel=1e-6, abs=1e-12)
+
+
+def test_plate_first_moment_is_exact_on_bspline_profiles():
+    # OCC's default integration misses B-spline-bounded faces by ~1e-4; the plate route must not
+    from eitri.geometry.common import first_moment
+
+    pts = [(60, 0), (20, 45), (-40, 30), (-55, -20), (0, -50), (45, -35)]
+    face = bd.Face(bd.Wire([bd.Spline(*pts, (60, 0))]))
+    n, poly = 200000, []
+    w = face.outer_wire()
+    poly = [(q.X, q.Y) for q in (w.position_at(k / n) for k in range(n))]
+    x = [q[0] for q in poly]
+    y = [q[1] for q in poly]
+    cr = [x[k] * y[(k + 1) % n] - x[(k + 1) % n] * y[k] for k in range(n)]
+    area = sum(cr) / 2
+    sx = sum((x[k] + x[(k + 1) % n]) * cr[k] for k in range(n)) / 6
+    a, mx, _ = first_moment(face)
+    assert abs(a) == pytest.approx(abs(area), rel=1e-6)
+    assert mx * math.copysign(1, area) == pytest.approx(sx, rel=1e-5)  # default integration: ~1e-4
+
+
 def test_symmetric_disc_is_balanced(spec):
     r = evaluate(spec)
     assert r["mass"]["static_imbalance_gmm"] < 0.1

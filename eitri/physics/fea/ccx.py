@@ -50,7 +50,7 @@ def write_inp(path: Path, mesh: Mesh2D, thickness_mm: float, E_mpa: float, nu: f
     L.append("*ELEMENT, TYPE=CPS6, ELSET=Eall")
     L += [f"{i + 1}," + ",".join(map(str, e)) for i, e in enumerate(mesh.elems)]
     L += ["*MATERIAL, NAME=STEEL", "*ELASTIC", f"{E_mpa},{nu}", "*DENSITY", f"{density_kg_m3 * 1e-12:.6e}",
-          f"*SOLID SECTION, ELSET=Eall, MATERIAL=STEEL", f"{thickness_mm}"]
+          "*SOLID SECTION, ELSET=Eall, MATERIAL=STEEL", f"{thickness_mm}"]
     L.append("*BOUNDARY")
     for node, dofs in case.fixed.items():
         L += [f"{node},{d},{d},0." for d in dofs]

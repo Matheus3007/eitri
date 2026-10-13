@@ -1,4 +1,10 @@
-"""Exact mass properties from the B-rep solid (OpenCascade integrates the true geometry, no meshing)."""
+"""Exact mass properties from the B-rep (OpenCascade integrates the true geometry, no meshing).
+
+Plates (every generated weapon, and imported ones that pass the flat-plate test) are integrated from their 2D
+profile with adaptive, error-controlled integration and extruded analytically. OCC's 3D volume integration
+has no working error control (with an epsilon it returns wrong volumes) and its fixed-order default misses
+the first moment of B-spline side faces by ~1000 mm^4: ~9 g*mm of fake imbalance on a beetleweight hook.
+"""
 
 import math
 from dataclasses import asdict, dataclass
@@ -21,11 +27,26 @@ class MassProps:
         return asdict(self)
 
 
-def mass_props(solid: bd.Solid, density_kg_m3: float) -> MassProps:
-    vol_mm3 = solid.volume
+def _plate(profile: bd.Face, t: float):
+    """(volume, CG, unit-density inertia tensor about the CG) of `profile` extruded t, centered on z=0."""
+    from eitri.geometry.common import face_props
+
+    g = face_props(profile)
+    a, c, m = g.Mass(), g.CentreOfMass(), g.MatrixOfInertia()  # m: area moments about the CG, z = 0
+    lam = a * t**3 / 12  # through-thickness term
+    tensor = [[t * m.Value(1, 1) + lam, t * m.Value(1, 2), 0.0],
+              [t * m.Value(2, 1), t * m.Value(2, 2) + lam, 0.0],
+              [0.0, 0.0, t * m.Value(3, 3)]]
+    return a * t, bd.Vector(c.X(), c.Y(), 0.0), tensor
+
+
+def mass_props(solid: bd.Solid, density_kg_m3: float, plate: tuple[bd.Face, float] | None = None) -> MassProps:
+    """`plate` = (profile, thickness) when the solid is that profile extruded symmetrically about z=0."""
+    if plate is not None:
+        vol_mm3, c, tensor_unit = _plate(*plate)
+    else:
+        vol_mm3, c, tensor_unit = solid.volume, solid.center(bd.CenterOf.MASS), solid.matrix_of_inertia
     mass = density_kg_m3 * vol_mm3 * 1e-9
-    c = solid.center(bd.CenterOf.MASS)
-    tensor_unit = solid.matrix_of_inertia  # unit density, mm^5, about the CG
     to_si = density_kg_m3 * 1e-15
     tensor = [[v * to_si for v in row] for row in tensor_unit]
     e_mm = math.hypot(c.X, c.Y)

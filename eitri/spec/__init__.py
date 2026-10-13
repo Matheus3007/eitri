@@ -87,6 +87,9 @@ class Constraints(Strict):
     max_spinup_s: float | None = None
     max_imbalance_gmm: float = 20.0
     min_ligament_mm: float = 5.0
+    # Re-entrant (concave) corners are stress raisers: anything kinking more than this must be filleted.
+    # Near-tangent kinks are tolerated (Rebot V3's worst is 21 deg, between a pocket's end arc and its wall).
+    max_sharp_corner_deg: float = 30.0
 
 
 class Style(Strict):
@@ -96,12 +99,18 @@ class Style(Strict):
     min_hook_deg: float | None = 5.0  # teeth lean into the spin and grab
     max_root_fillet_ratio: float | None = 0.4  # gullet fillet / tooth height: crisp gullets, not scoops
     min_pocket_sweep_deg: float | None = 15.0  # swept pockets must visibly sweep, not look like wheel spokes
+    min_wall_frac: float | None = 0.08  # pocket walls >= this x tip radius, no thin-rim hoops (Rebot: 0.096)
 
 
 class Analysis(Strict):
     fea: bool = True  # CalculiX plane-stress FEA; False = analytic Lame estimate only (fast, crude)
     mesh_mm: float | None = None  # max element size; default od/25 (optimizer), use --fine for od/75
-    threads: int = 4
+    # ccx 2.17's multithreaded solve is nondeterministic (~1% stress scatter between identical runs), so 1.
+    # The optimizer parallelizes across candidates instead.
+    threads: int = 1
+    # The optimizer's coarse mesh reads safety factors a little high vs the fine mesh the winner is verified
+    # on (~1-6%), so during optimization SF limits are raised by this fraction.
+    coarse_margin: float = 0.05
 
 
 class Objective(Strict):
