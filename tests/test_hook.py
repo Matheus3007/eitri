@@ -142,3 +142,11 @@ def test_arm_slot_that_cannot_fit_is_flagged_not_dropped():
     assert ok["style_arm_slot"]
     crowded = {c.name: c.ok for c in hook(arm_wall_mm=16, arm_fillet_mm=12).style_checks(Style())}
     assert not crowded["style_arm_slot"]
+
+
+def test_spine_shoulder_widens_the_tooth_below_its_back():
+    from eitri.reference import tooth_widths
+
+    plain, full = tooth_widths(hook()), tooth_widths(hook(spine_shoulder=0.1))
+    assert full["3"] == pytest.approx(plain["3"], abs=0.05)  # the tip itself is untouched
+    assert full["25"] > plain["25"] + 1.0

@@ -51,6 +51,7 @@ class HookParams:
     root_fillet_mm: float = 3.0
     back_deg: float = 24.0
     back_r_frac: float = 0.84
+    spine_shoulder: float = 0.0  # >0 fills out the spine just below the tooth back (wider tooth); 0 = Rebot
     hub_d_mm: float = 52.0
     spine_waist_deg: float = 102.0
     cw_point_deg: float = 143.0  # nominal: balance turns the lobe by up to +-max_lobe_turn_deg
@@ -171,8 +172,8 @@ class Hook(Weapon):
         # Control points as fractions of each span, measured off Rebot V3's GanchoUnidente.
         back_mid = self._pt(R - (R - rB) * 0.3, a_B * 0.45)
         spine = [B := self._pt(rB, a_B),
-                 self._pt(lerp(rw, rB, 0.56), lerp(a_B, a_Ws, 0.21)),
-                 self._pt(lerp(rw, rB, 0.33), lerp(a_B, a_Ws, 0.33)),
+                 self._pt(lerp(rw, rB, min(0.56 + p.spine_shoulder, 0.95)), lerp(a_B, a_Ws, 0.21)),
+                 self._pt(lerp(rw, rB, min(0.33 + p.spine_shoulder, 0.9)), lerp(a_B, a_Ws, 0.33)),
                  self._pt(lerp(rw, rB, 0.10), lerp(a_B, a_Ws, 0.55)),
                  self._pt(rw, a_Ws),
                  self._pt(lerp(rw, r_P, 0.18), a_P - 7),
