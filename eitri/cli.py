@@ -284,20 +284,20 @@ def optimize_cmd(
     typer.echo(f"optimizing {sorted(spec.free_params())} over {spec.material.names()} "
                f"({trials} trials, {workers} workers) -> {run}")
     res = optimize(spec, trials, workers, seed, run / "history.jsonl", log=typer.echo)
-    render.pareto_png(res.history, run / "pareto.png", spec.objective.maximize, res.best)
+    render.pareto_png(res.history, run / "pareto.png", spec.objective.name, res.best)
 
     best = res.best
     if best is None or "error" in best:
         typer.echo("no valid design found; see history.jsonl")
         raise typer.Exit(1)
     # Verify the top candidates on the fine mesh; the winner is the best one that still passes there.
-    ranked = sorted((h for h in res.history if h["ok"]), key=lambda h: -h["objective"])[:verify_top] or [best]
+    ranked = sorted((h for h in res.history if h["ok"]), key=lambda h: -h["score"])[:verify_top] or [best]
     verified = []
     for cand in ranked:
         v = evaluate(spec, design=cand["design"], material=cand["material"], fine=True,
                      keep_fea_dir=run / "best" / "fea")
         verified.append((cand, v))
-        typer.echo(f"  fine-mesh check trial {cand['trial']}: {spec.objective.maximize} "
+        typer.echo(f"  fine-mesh check trial {cand['trial']}: {spec.objective.name} "
                    f"{cand.get('objective', float('nan')):.4g} -> {'ok' if v.get('ok') else 'FAIL ' + ','.join(v.get('failed', [v.get('error', '')]))}")
         if v.get("ok"):
             break
@@ -319,7 +319,7 @@ def optimize_cmd(
     (run / "summary.json").write_text(json.dumps(_clean(summary), indent=2))
     typer.echo("" if res.best_feasible else "WARNING: no design met every constraint; best = least violating")
     if b0.get("objective") is not None and best.get("objective"):
-        typer.echo(f"baseline {spec.objective.maximize} {b0['objective']:.4g} "
+        typer.echo(f"baseline {spec.objective.name} {b0['objective']:.4g} "
                    f"({'ok' if b0['ok'] else 'FAIL ' + ','.join(b0.get('failed', []))}) -> "
                    f"best {best['objective']:.4g} (trial {best['trial']})")
     typer.echo("verified on fine mesh:")

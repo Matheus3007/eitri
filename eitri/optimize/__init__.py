@@ -77,6 +77,7 @@ def _record(number: int, result: dict) -> dict:
     s = result["stress"]
     rec |= {
         "objective": result["objective"]["value"],
+        "score": result["objective"]["score"],
         "failed": result["failed"],
         "mass_kg": result["mass"]["mass_kg"],
         "moi_kgm2": result["mass"]["moi_kgm2"],
@@ -144,7 +145,7 @@ def optimize(spec: Spec, trials: int, workers: int, seed: int, history_path: Pat
                 result = fut.result()
                 v = violations(result)
                 trial.set_constraint("violation", sum(v))
-                value = result["objective"]["value"] if "error" not in result else 0.0
+                value = result["objective"]["score"] if "error" not in result else -1e9
                 study.tell(trial, value)
                 rec = _record(trial.number, result)
                 rec["violation"] = sum(v)
@@ -153,7 +154,7 @@ def optimize(spec: Spec, trials: int, workers: int, seed: int, history_path: Pat
                 hist.flush()
                 if rec["ok"] and value > best_val:
                     best_val = value
-                    log(f"  trial {trial.number:4d}: new best {spec.objective.maximize} = {value:.4g} "
+                    log(f"  trial {trial.number:4d}: new best {spec.objective.name} = {rec['objective']:.4g} "
                         f"({rec['material']}, mass {rec['mass_kg']:.3f} kg, SF spin {rec['sf_spinning']:.2f}, "
                         f"SF impact {rec['sf_impact'] or float('nan'):.2f})")
                 elif len(history) % 25 == 0:
@@ -163,7 +164,7 @@ def optimize(spec: Spec, trials: int, workers: int, seed: int, history_path: Pat
     baseline = next(h for h in history if h["trial"] == 0)
     feasible = [h for h in history if h["ok"]]
     if feasible:
-        best = max(feasible, key=lambda h: h["objective"])
+        best = max(feasible, key=lambda h: h["score"])
     else:
         valid = [h for h in history if "error" not in h] or history
         best = min(valid, key=lambda h: h["violation"])

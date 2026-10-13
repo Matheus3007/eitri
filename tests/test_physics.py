@@ -128,3 +128,12 @@ def test_lame_solid_disc_center_stress():
 def test_invalid_design_reports_error_instead_of_crashing(spec):
     r = evaluate(spec, design={**spec.fixed_design(), "n_teeth": 4, "ramp_deg": 85, "land_deg": 10})
     assert r["ok"] is False and "error" in r
+
+
+def test_minimize_mass_objective_and_energy_floor(spec):
+    spec.objective.minimize = "mass"
+    spec.constraints.min_energy_j = 1e9
+    r = evaluate(spec)
+    assert r["objective"]["name"] == "mass"
+    assert r["objective"]["score"] == pytest.approx(-r["mass"]["mass_kg"])
+    assert "energy_min" in r["failed"]

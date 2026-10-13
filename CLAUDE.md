@@ -86,6 +86,8 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   `common.offset_pieces` (splits at kinks, returns all pieces or []) on closed faces.
 - CalculiX 2.17 multithreaded runs are nondeterministic (~1% stress scatter between identical runs):
   `[analysis] threads = 1` (default); parallelism comes from evaluating candidates in parallel.
+- Objectives: `[objective] maximize = energy|moi|effective_mass`, or `minimize = "mass"` (lightest weapon;
+  pair with `[constraints] min_energy_j`). The optimizer maximizes `objective.score` = sign x value.
 - Optimizer: SF limits get `[analysis] coarse_margin` (5%) on the coarse mesh; at the end the top
   `--verify-top` candidates are re-run on the fine mesh and the best that still passes wins.
 - Center of percussion is intentionally not an objective: a balanced rotor's axle always reacts the full

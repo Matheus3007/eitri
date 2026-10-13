@@ -97,11 +97,15 @@ def evaluate(spec: Spec, design: dict[str, float] | None = None, material: str |
                             stress["impact_safety_factor"], c.min_impact_safety_factor,
                             "hit force at first body yield (while spinning) / estimated peak hit force"))
 
-    objective = {"energy": hit.energy_j, "moi": mp.moi_kgm2, "effective_mass": hit.effective_mass_kg}
+    if c.min_energy_j is not None:
+        checks.append(Check("energy_min", hit.energy_j >= c.min_energy_j, hit.energy_j, c.min_energy_j))
+    objective = {"energy": hit.energy_j, "moi": mp.moi_kgm2, "effective_mass": hit.effective_mass_kg,
+                 "mass": mp.mass_kg}
+    o = spec.objective
     return {
         "ok": all(ch.ok for ch in checks),
         "failed": [ch.name for ch in checks if not ch.ok],
-        "objective": {"name": spec.objective.maximize, "value": objective[spec.objective.maximize]},
+        "objective": {"name": o.name, "value": objective[o.name], "score": o.sign * objective[o.name]},
         "material": mat.name,
         "design": weapon.param_dict(),
         "derived": weapon.derived(),

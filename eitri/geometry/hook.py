@@ -108,7 +108,7 @@ _hub_lock = functools.lru_cache(maxsize=8)(hub_lock)  # same hub on every candid
 
 
 class Hook(Weapon):
-    BALANCE_TOL_MM3 = 5.0
+    BALANCE_TOL_MM3 = 0.5  # first moment left after balancing: 0.5 mm^3 x 6.5 mm plate ~ 0.03 g*mm
 
     def __init__(self, params: HookParams, spin: str = "ccw"):
         self.params = params

@@ -87,6 +87,7 @@ class Constraints(Strict):
     max_spinup_s: float | None = None
     max_imbalance_gmm: float = 20.0
     min_ligament_mm: float = 5.0
+    min_energy_j: float | None = None  # stored energy at top speed
     # Re-entrant (concave) corners are stress raisers: anything kinking more than this must be filleted.
     # Near-tangent kinks are tolerated (Rebot V3's worst is 21 deg, between a pocket's end arc and its wall).
     max_sharp_corner_deg: float = 30.0
@@ -115,6 +116,17 @@ class Analysis(Strict):
 
 class Objective(Strict):
     maximize: Literal["energy", "moi", "effective_mass"] = "energy"
+    minimize: Literal["mass"] | None = None  # set to make the weapon as light as possible (overrides maximize);
+    # pair it with [constraints] min_energy_j so it still hits hard
+
+    @property
+    def name(self) -> str:
+        return self.minimize or self.maximize
+
+    @property
+    def sign(self) -> float:
+        """+1 maximize, -1 minimize: the optimizer maximizes sign * value."""
+        return -1.0 if self.minimize else 1.0
 
 
 class Spec(Strict):
