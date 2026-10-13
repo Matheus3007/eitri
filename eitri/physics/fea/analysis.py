@@ -61,7 +61,11 @@ def _element_mass_midside(mesh: Mesh2D, thickness: float, density_t_mm3: float) 
 def run(weapon, E_mpa: float, nu: float, density: float, omega_rad_s: float, peak_force_n: float,
         contact_len_mm: float, mesh_size_mm: float, threads: int = 1, keep_dir=None) -> FeaRun:
     t = weapon.params.thickness_mm
-    mesh = mesh_profile(weapon.profile(), mesh_size_mm)
+    tip0 = weapon.impact_face()[0]
+    # a contact patch only a few elements long gets a locally refined mesh at the tip
+    refine = ([(tip0[0], tip0[1], contact_len_mm / 4, contact_len_mm + 2)]
+              if contact_len_mm < 2 * mesh_size_mm else [])
+    mesh = mesh_profile(weapon.profile(), mesh_size_mm, refine=refine)
     xy = mesh.nodes
     supports = weapon.support_circles()
 

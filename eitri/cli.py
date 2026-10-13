@@ -275,6 +275,8 @@ def optimize_cmd(
     workers: int = typer.Option(max(1, min(8, (os.cpu_count() or 2) - 1)), help="parallel processes"),
     seed: int = typer.Option(0),
     verify_top: int = typer.Option(5, help="fine-mesh check up to this many top candidates"),
+    warm_start: Path | None = typer.Option(None, help="history.jsonl of an earlier run: seed with its best designs"),
+    warm_k: int = typer.Option(12, help="how many earlier designs to seed"),
 ):
     """Optimize the [design] ranges for the [objective] under [constraints]; verify the best on a fine mesh."""
     from eitri.optimize import optimize
@@ -283,7 +285,10 @@ def optimize_cmd(
     run = _run_dir(spec_path, "optimize")
     typer.echo(f"optimizing {sorted(spec.free_params())} over {spec.material.names()} "
                f"({trials} trials, {workers} workers) -> {run}")
-    res = optimize(spec, trials, workers, seed, run / "history.jsonl", log=typer.echo)
+    from eitri.optimize import warm_designs
+
+    warm = warm_designs(warm_start, warm_k) if warm_start else []
+    res = optimize(spec, trials, workers, seed, run / "history.jsonl", log=typer.echo, warm=warm)
     render.pareto_png(res.history, run / "pareto.png", spec.objective.name, res.best)
 
     best = res.best

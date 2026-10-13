@@ -29,9 +29,24 @@ class Mesh2D:
         return np.stack([e[:, [0, 1, 3]], e[:, [1, 2, 4]], e[:, [2, 0, 5]]], axis=1)
 
 
+def _refine(refine: list[tuple[float, float, float, float]], size_mm: float) -> None:
+    """Size field: element size `s` within `r` of each point (x, y, s, r), growing linearly to the global
+    size over another 3 r. A formula field, so no geometric points (an orphan node breaks the solve)."""
+    fields = []
+    for x, y, s, r in refine:
+        f = gmsh.model.mesh.field.add("MathEval")
+        d = f"Sqrt((x-({x}))^2+(y-({y}))^2)"
+        gmsh.model.mesh.field.setString(f, "F", f"Min({size_mm},Max({s},{s}+({size_mm}-{s})*({d}-{r})/{3 * r}))")
+        fields.append(f)
+    mn = gmsh.model.mesh.field.add("Min")
+    gmsh.model.mesh.field.setNumbers(mn, "FieldsList", fields)
+    gmsh.model.mesh.field.setAsBackgroundMesh(mn)
+
+
 def mesh_profile(face: bd.Face, size_mm: float, min_size_mm: float | None = None,
-                 curvature_elems: int = 24) -> Mesh2D:
-    min_size_mm = min_size_mm or size_mm / 6
+                 curvature_elems: int = 24, refine: list[tuple[float, float, float, float]] = ()) -> Mesh2D:
+    """`refine`: (x, y, size, radius) local refinement, e.g. at a small contact patch."""
+    min_size_mm = min([min_size_mm or size_mm / 6] + [s for _, _, s, _ in refine])
     with tempfile.TemporaryDirectory() as tmp:
         brep = Path(tmp) / "profile.brep"
         bd.export_brep(face, str(brep))
@@ -44,6 +59,8 @@ def mesh_profile(face: bd.Face, size_mm: float, min_size_mm: float | None = None
             gmsh.option.setNumber("Mesh.MeshSizeMax", size_mm)
             gmsh.option.setNumber("Mesh.MeshSizeMin", min_size_mm)
             gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", curvature_elems)
+            if refine:
+                _refine(list(refine), size_mm)
             gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay: good quality triangles
             gmsh.option.setNumber("Mesh.ElementOrder", 2)
             gmsh.option.setNumber("Mesh.SecondOrderLinear", 0)  # midside nodes on the true curves

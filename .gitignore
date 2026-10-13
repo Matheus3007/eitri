@@ -5,3 +5,4 @@ __pycache__/
 # Weapon projects are the user's work: kept local, never pushed. Reference specs live in examples/.
 projects/
 examples/*/runs/
+.eitri_reference.json

@@ -86,6 +86,13 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   `common.offset_pieces` (splits at kinks, returns all pieces or []) on closed faces.
 - CalculiX 2.17 multithreaded runs are nondeterministic (~1% stress scatter between identical runs):
   `[analysis] threads = 1` (default); parallelism comes from evaluating candidates in parallel.
+- Reference comparison (`[reference] spec = "projects/rebot/spec.toml"`, eitri/reference.py): the design must
+  not lose against a proven weapon. Same code/mesh on both, four load cases -- in-plane hit on the bite, on the
+  outer 3 mm (tooth-to-tooth stand-in) and 8 mm of the face, and a 3D out-of-plane hit on the flat of the tooth
+  (C3D10, solid3d.py, validated vs cantilever theory) -- each split into regions tip/tooth/arm/hub; every region
+  must hold what the reference's same region holds (up to 1.25x the reference's first yield), plus tooth width
+  at every depth and energy. Reference metrics are cached in `.eitri_reference.json` next to its spec; the
+  expensive cases only run for candidates passing everything else (~20 s, ~650 MB each: 6 workers on 7 GB).
 - Objectives: `[objective] maximize = energy|moi|effective_mass`, or `minimize = "mass"` (lightest weapon;
   pair with `[constraints] min_energy_j`). The optimizer maximizes `objective.score` = sign x value.
 - Optimizer: SF limits get `[analysis] coarse_margin` (5%) on the coarse mesh; at the end the top

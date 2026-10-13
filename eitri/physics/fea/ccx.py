@@ -86,25 +86,35 @@ def parse_frd(path: Path, n_nodes: int) -> Result:
             current = None
     if "DISP" not in blocks or "STRESS" not in blocks:
         raise RuntimeError(f"no DISP/STRESS results in {path}")
-    return Result(disp=blocks["DISP"][:, :2], stress=blocks["STRESS"])
+    return Result(disp=blocks["DISP"], stress=blocks["STRESS"])
 
 
-def solve(mesh: Mesh2D, thickness_mm: float, E_mpa: float, nu: float, density_kg_m3: float,
-          case: LoadCase, threads: int = 1, keep_dir: Path | None = None) -> Result:
+def run_job(inp: str, n_nodes: int, name: str, threads: int = 1, keep_dir: Path | None = None) -> Result:
+    """Run one ccx deck (text) and parse its nodal results."""
     if CCX is None:
         raise RuntimeError("CalculiX `ccx` not found on PATH (apt install calculix-ccx)")
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
-        write_inp(work / "job.inp", mesh, thickness_mm, E_mpa, nu, density_kg_m3, case)
+        (work / "job.inp").write_text(inp)
         env = {**os.environ, "OMP_NUM_THREADS": str(threads), "CCX_NPROC_EQUATION_SOLVER": str(threads)}
         proc = subprocess.run([CCX, "-i", "job"], cwd=work, env=env, capture_output=True, text=True)
         if keep_dir is not None:
             keep_dir.mkdir(parents=True, exist_ok=True)
             for f in ("job.inp", "job.frd", "job.dat"):
                 if (work / f).exists():
-                    shutil.copy(work / f, keep_dir / f"{case.name}.{f.split('.')[1]}")
+                    shutil.copy(work / f, keep_dir / f"{name}.{f.split('.')[1]}")
         if proc.returncode != 0 or "*ERROR" in proc.stdout:
             err = [l.strip() for l in proc.stdout.splitlines() if "ERROR" in l][:5]
-            raise RuntimeError(f"ccx failed ({case.name}, exit code {proc.returncode}): "
+            raise RuntimeError(f"ccx failed ({name}, exit code {proc.returncode}): "
                                f"{err or proc.stderr.strip()[-300:] or 'no error message (crash)'}")
-        return parse_frd(work / "job.frd", mesh.n_nodes)
+        return parse_frd(work / "job.frd", n_nodes)
+
+
+def solve(mesh: Mesh2D, thickness_mm: float, E_mpa: float, nu: float, density_kg_m3: float,
+          case: LoadCase, threads: int = 1, keep_dir: Path | None = None) -> Result:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "job.inp"
+        write_inp(path, mesh, thickness_mm, E_mpa, nu, density_kg_m3, case)
+        inp = path.read_text()
+    res = run_job(inp, mesh.n_nodes, case.name, threads, keep_dir)
+    return Result(disp=res.disp[:, :2], stress=res.stress)

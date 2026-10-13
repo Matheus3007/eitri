@@ -97,6 +97,18 @@ def evaluate(spec: Spec, design: dict[str, float] | None = None, material: str |
                             stress["impact_safety_factor"], c.min_impact_safety_factor,
                             "hit force at first body yield (while spinning) / estimated peak hit force"))
 
+    ref_profile = None
+    if spec.reference is not None and fea_run is not None:
+        if all(ch.ok for ch in checks):  # the expensive cases only for designs that pass everything else
+            from eitri import reference
+
+            ref_profile = {"design": None, "reference": reference.reference_metrics(spec.reference.spec, fine)}
+            partial = {"_weapon": weapon, "_fea": fea_run, "drive": dr.to_dict(), "impact": hit.to_dict()}
+            ref_profile["design"] = reference.metrics(partial, mat, fine)
+            checks += reference.compare(ref_profile["design"], ref_profile["reference"])
+        else:
+            checks.append(Check("ref_profile", False, None, None,
+                                "not compared with the reference: other checks fail first"))
     if c.min_energy_j is not None:
         checks.append(Check("energy_min", hit.energy_j >= c.min_energy_j, hit.energy_j, c.min_energy_j))
     objective = {"energy": hit.energy_j, "moi": mp.moi_kgm2, "effective_mass": hit.effective_mass_kg,
@@ -114,6 +126,7 @@ def evaluate(spec: Spec, design: dict[str, float] | None = None, material: str |
         "impact": hit.to_dict(),
         "stress": stress,
         "checks": [asdict(ch) for ch in checks],
+        "reference_profile": ref_profile,
         "_weapon": weapon,
         "_solid": solid,
         "_spinup_curve": dr.spinup_curve,

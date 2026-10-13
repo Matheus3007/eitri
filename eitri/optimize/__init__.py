@@ -16,6 +16,7 @@ from typing import Callable
 import optuna
 
 from eitri.evaluate import evaluate, public
+from eitri.reference import FORCE_RANKED, reference_metrics
 from eitri.geometry.disc import DiscParams
 from eitri.geometry.fang import FangParams
 from eitri.geometry.hook import HookParams
@@ -52,7 +53,7 @@ def apply_margin(result: dict, margin: float) -> dict:
     if "error" in result or margin <= 0:
         return result
     for c in result["checks"]:
-        if c["name"] in SF_CHECKS and c["value"] is not None and c["limit"] is not None:
+        if c["name"] in SF_CHECKS + FORCE_RANKED and c["value"] is not None and c["limit"] is not None:
             c["limit"] *= 1 + margin
             c["ok"] = c["value"] >= c["limit"]
             c["detail"] = (c.get("detail") or "") + f" (limit +{margin:.0%} coarse-mesh margin)"
@@ -100,8 +101,17 @@ class OptimizeResult:
     baseline: dict
 
 
+def warm_designs(history: Path, k: int) -> list[dict]:
+    """The k best feasible designs of a previous run, then the least-violating ones, to seed a new run."""
+    recs = [json.loads(line) for line in history.read_text().splitlines() if line.strip()]
+    recs = [r for r in recs if "error" not in r]
+    ok = sorted((r for r in recs if r["ok"]), key=lambda r: -r.get("score", r["objective"]))
+    rest = sorted((r for r in recs if not r["ok"]), key=lambda r: r["violation"])
+    return [r["design"] for r in (ok + rest)[:k]]
+
+
 def optimize(spec: Spec, trials: int, workers: int, seed: int, history_path: Path,
-             log: Callable[[str], None] = print) -> OptimizeResult:
+             log: Callable[[str], None] = print, warm: list[dict] = ()) -> OptimizeResult:
     free = spec.free_params()
     mats = spec.material.names()
     if not free and len(mats) == 1:
@@ -110,6 +120,9 @@ def optimize(spec: Spec, trials: int, workers: int, seed: int, history_path: Pat
     fixed = spec.fixed_design()
     spec = spec.model_copy(deep=True)
     spec.analysis.threads = 1
+    if spec.reference is not None:  # compute (and cache) the reference's profile once, before the workers start
+        log(f"reference: {spec.reference.spec} (cached after the first run)")
+        reference_metrics(spec.reference.spec, fine=False)
 
     sampler = optuna.samplers.TPESampler(seed=seed, multivariate=True,
                                          n_startup_trials=max(8, min(25, trials // 5)))
@@ -119,6 +132,14 @@ def optimize(spec: Spec, trials: int, workers: int, seed: int, history_path: Pat
     if len(mats) > 1:
         base["material"] = mats[0]
     study.enqueue_trial(base)
+    for d in warm:  # earlier designs, clipped into this spec's ranges
+        params = {k: (round(min(max(d[k], lo), hi)) if k in ints else min(max(d[k], lo), hi))
+                  for k, (lo, hi) in free.items() if k in d}
+        if len(mats) > 1:
+            params["material"] = mats[0]
+        study.enqueue_trial(params)
+    if warm:
+        log(f"warm start: {len(warm)} designs from a previous run")
 
     def suggest(trial: optuna.Trial) -> tuple[dict, str]:
         design = dict(fixed)

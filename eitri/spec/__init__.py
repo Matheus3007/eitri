@@ -114,6 +114,13 @@ class Analysis(Strict):
     coarse_margin: float = 0.05
 
 
+class Reference(Strict):
+    """A proven weapon the design must not lose against (see eitri.reference): every load case, every region
+    at least as strong, tooth at least as wide, at least as much energy."""
+
+    spec: str  # path to the reference weapon's spec (relative to where eitri runs)
+
+
 class Objective(Strict):
     maximize: Literal["energy", "moi", "effective_mass"] = "energy"
     minimize: Literal["mass"] | None = None  # set to make the weapon as light as possible (overrides maximize);
@@ -139,6 +146,7 @@ class Spec(Strict):
     objective: Objective = Field(default_factory=Objective)
     analysis: Analysis = Field(default_factory=Analysis)
     style: Style = Field(default_factory=Style)
+    reference: Reference | None = None
     design: dict[str, Param]
 
     def free_params(self) -> dict[str, tuple[float, float]]:
