@@ -47,14 +47,23 @@ class Result:
         return (sx + sy) / 2 + np.sqrt(((sx - sy) / 2) ** 2 + txy**2)
 
 
-def write_inp(path: Path, mesh: Mesh2D, thickness_mm: float, E_mpa: float, nu: float,
+def write_inp(path: Path, mesh: Mesh2D, thickness_mm, E_mpa: float, nu: float,
               density_kg_m3: float, case: LoadCase) -> None:
+    """`thickness_mm`: a number, or one per element (machined plates: blind pockets, counterbores)."""
     L = ["*HEADING", f"eitri {case.name}", "*NODE, NSET=Nall"]
     L += [f"{i + 1},{x:.9g},{y:.9g},0" for i, (x, y) in enumerate(mesh.nodes)]
     L.append("*ELEMENT, TYPE=CPS6, ELSET=Eall")
     L += [f"{i + 1}," + ",".join(map(str, e)) for i, e in enumerate(mesh.elems)]
-    L += ["*MATERIAL, NAME=STEEL", "*ELASTIC", f"{E_mpa},{nu}", "*DENSITY", f"{density_kg_m3 * 1e-12:.6e}",
-          "*SOLID SECTION, ELSET=Eall, MATERIAL=STEEL", f"{thickness_mm}"]
+    L += ["*MATERIAL, NAME=STEEL", "*ELASTIC", f"{E_mpa},{nu}", "*DENSITY", f"{density_kg_m3 * 1e-12:.6e}"]
+    if np.ndim(thickness_mm) == 0:
+        L += ["*SOLID SECTION, ELSET=Eall, MATERIAL=STEEL", f"{thickness_mm}"]
+    else:
+        th = np.round(np.asarray(thickness_mm, float), 4)
+        for k, tv in enumerate(np.unique(th)):
+            ids = np.nonzero(th == tv)[0] + 1
+            L.append(f"*ELSET, ELSET=T{k}")
+            L += [",".join(map(str, ids[i:i + 16])) for i in range(0, len(ids), 16)]
+            L += [f"*SOLID SECTION, ELSET=T{k}, MATERIAL=STEEL", f"{tv}"]
     for eq in case.equations:
         L += ["*EQUATION", str(len(eq)), ",".join(f"{n},{d},{c:.12g}" for n, d, c in eq)]
     L.append("*BOUNDARY")
@@ -116,7 +125,7 @@ def run_job(inp: str, n_nodes: int, name: str, threads: int = 1, keep_dir: Path 
         return parse_frd(work / "job.frd", n_nodes)
 
 
-def solve(mesh: Mesh2D, thickness_mm: float, E_mpa: float, nu: float, density_kg_m3: float,
+def solve(mesh: Mesh2D, thickness_mm, E_mpa: float, nu: float, density_kg_m3: float,
           case: LoadCase, threads: int = 1, keep_dir: Path | None = None) -> Result:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "job.inp"

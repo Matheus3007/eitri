@@ -9,6 +9,7 @@ from eitri.geometry.disc import Disc
 from eitri.geometry.fang import Fang
 from eitri.geometry.hook import Hook
 from eitri.geometry.step_part import StepPart
+from eitri.geometry.topo import Topo
 from eitri.geometry.weapon import Check, Weapon
 from eitri.physics import drive, impact, shaft
 from eitri.physics.fea import analysis as fea
@@ -17,7 +18,7 @@ from eitri.physics.mass import mass_props
 from eitri.spec import Spec
 
 
-WEAPONS = {"disc": Disc, "fang": Fang, "hook": Hook, "step": StepPart}
+WEAPONS = {"disc": Disc, "fang": Fang, "hook": Hook, "step": StepPart, "topo": Topo}
 
 
 def single_tooth_bite_mm(spec: Spec) -> float:
@@ -27,6 +28,10 @@ def single_tooth_bite_mm(spec: Spec) -> float:
 def build_weapon(spec: Spec, design: dict[str, float]) -> Weapon:
     if spec.weapon.type == "hook" and not design.get("envelope_bite_mm"):
         design = {**design, "envelope_bite_mm": single_tooth_bite_mm(spec)}  # the outline follows the bite
+    if spec.machining is not None and spec.machining.any():
+        from eitri.geometry import machining
+
+        return machining.build(spec, WEAPONS[spec.weapon.type], design)
     return WEAPONS[spec.weapon.type].from_dict(design, spec.weapon.spin)
 
 
@@ -59,7 +64,7 @@ def evaluate(spec: Spec, design: dict[str, float] | None = None, material: str |
                         f"sharpest re-entrant corner (at {sharp.x:.1f}, {sharp.y:.1f} mm); stress raiser unless "
                         "filleted" if sharp else "no re-entrant corners"))
 
-    mp = mass_props(solid, mat.density, weapon.plate())
+    mp = mass_props(solid, mat.density, weapon.plate(), getattr(weapon, "mass_parts", lambda: None)())
     dr = drive.simulate(spec.drive, mp.moi_kgm2)
     hit = impact.analyze(mp.moi_kgm2, dr.top_rad_s, weapon.tip_radius_mm(), weapon.n_teeth(),
                          weapon.tooth_depth_mm(), weapon.hook_deg(), spec.context)

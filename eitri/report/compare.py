@@ -102,7 +102,8 @@ def rows(mine: dict, ref: dict, match_mass: bool = True) -> list[dict]:
 
     def add(group, item, r, d, higher_better=True, fmt="{:.1f}", need=None, note=""):
         ratio = d / r if r else None
-        worse = (d < (need if need is not None else r)) if higher_better else (d > r)
+        lim = need if need is not None else r
+        worse = (d < lim * (1 - 1e-6)) if higher_better else (d > r * (1 + 1e-6))
         out.append({"group": group, "item": item, "reference": fmt.format(r), "design": fmt.format(d),
                     "ratio": ratio, "worse": bool(worse), "note": note})
 

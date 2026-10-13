@@ -66,6 +66,10 @@ class Weapon(ABC):
         """Smallest radius of the center cutout (where the centrifugal FEA case pins the part)."""
         return getattr(self.params, "bore_mm", 0.0) / 2
 
+    def pocket_faces(self) -> list[bd.Face]:
+        """The lightening pockets (cut through unless [machining] pocket_depth_mm makes them blind)."""
+        return []
+
     def has_pulley_lock(self) -> bool:
         """A non-round center cutout that keys the weapon to its pulley (which then carries the hit)."""
         return False

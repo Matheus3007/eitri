@@ -75,6 +75,11 @@ class HookParams:
     lock_boss_d_mm: float = 10.5  # material boss left around each bolt inside the lock cutout
     lock_fillet_mm: float = 1.0
     envelope_bite_mm: float = 0.0  # 0 = use the bite computed from the spec's rpm and closing speed
+    # set from [machining] (eitri/geometry/machining.py): pockets milled to this fraction of the plate (1 =
+    # through), and the first moment (plate-equivalent mm^3, canonical frame) of material other features remove
+    pocket_depth_frac: float = 1.0
+    extra_mx_mm3: float = 0.0
+    extra_my_mm3: float = 0.0
 
     def __post_init__(self):
         self.bolt_count = round(self.bolt_count)
@@ -222,8 +227,11 @@ class Hook(Weapon):
                                       if p.arm_pocket and r1 > r0 + 5 and a1 > a0 else None)
             arm = self._cache["arm"]
             st["base"] = single_face(st["outline"] - arm) if arm is not None else st["outline"]
-            _, mx, my = first_moment(st["base"])
-            st["base_m"] = np.array([mx, my])
+            # first moment of what's left: a blind pocket only removes its depth fraction of the plate
+            m = np.array(first_moment(st["outline"])[1:])
+            if arm is not None:
+                m -= p.pocket_depth_frac * np.array(first_moment(arm)[1:])
+            st["base_m"] = m - np.array([p.extra_mx_mm3, p.extra_my_mm3])
             self._states[key] = st
         return self._states[key]
 
@@ -313,7 +321,8 @@ class Hook(Weapon):
         """First moment (mm^3) left after hollowing the lobe with this wall (hub cutouts are symmetric)."""
         self._n_evals += 1
         pk = self._cw_pocket(st, wall)
-        return st["base_m"] - (np.array(first_moment(pk)[1:]) if pk is not None else 0.0)
+        f = self.params.pocket_depth_frac
+        return st["base_m"] - (f * np.array(first_moment(pk)[1:]) if pk is not None else 0.0)
 
     def _solve_wall(self, st: dict, guess: float | None = None) -> tuple[float, np.ndarray]:
         """Wall thickness whose pocket removes the excess moment's component along itself. Thicker wall =
@@ -418,9 +427,13 @@ class Hook(Weapon):
         if pk is not None:
             face = single_face(face - pk)
         face = single_face(face - self._hub_cutters())
+        pockets = [f for f in (self._cache.get("arm"), pk) if f is not None]
+        filled = single_face(st["outline"] - self._hub_cutters())
         if self.spin == "cw":
             face = face.mirror(bd.Plane.XZ)
-        self._cache.update(face=face, outline=st["outline"], lobe_turn_deg=turn, cw_wall_mm=wall,
+            filled = filled.mirror(bd.Plane.XZ)
+            pockets = [f.mirror(bd.Plane.XZ) for f in pockets]
+        self._cache.update(face=face, filled=facing_up(filled), pockets=[facing_up(f) for f in pockets], outline=st["outline"], lobe_turn_deg=turn, cw_wall_mm=wall,
                            cw_pocket_area_mm2=pk.area if pk is not None else 0.0,
                            balance_residual_mm3=float(np.linalg.norm(r)), balance_evals=self._n_evals)
         self._states = {}  # free the per-turn geometry
@@ -429,6 +442,13 @@ class Hook(Weapon):
     # --- weapon interface --------------------------------------------------------------------------
     def profile(self) -> bd.Face:
         return self._build()["face"]
+
+    def pocket_faces(self) -> list[bd.Face]:
+        return self._build()["pockets"]
+
+    def filled_profile(self) -> bd.Face:
+        """The profile with the lightening pockets left in (hub cutouts still cut)."""
+        return self._build()["filled"]
 
     def solid(self) -> bd.Solid:
         t = self.params.thickness_mm

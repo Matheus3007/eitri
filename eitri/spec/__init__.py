@@ -20,7 +20,8 @@ class Strict(BaseModel):
 
 
 class Weapon(Strict):
-    type: Literal["hook", "fang", "disc", "step"] = "hook"  # hook/fang = asymmetric single tooth; step = imported
+    # hook/fang = asymmetric single tooth; step = imported STEP; topo = pockets from `eitri topo` in a base design
+    type: Literal["hook", "fang", "disc", "step", "topo"] = "hook"
     spin: Literal["ccw", "cw"] = "ccw"  # seen from +Z; teeth face the spin direction
 
 
@@ -132,12 +133,43 @@ class Shaft(Strict):
     min_safety_factor: float = 1.0
 
 
+class Machining(Strict):
+    """Non-through features (eitri/geometry/machining.py). All zero = a plain cut plate."""
+
+    pocket_depth_mm: float = 0.0  # lightening pockets milled this deep instead of cut through (0 = through)
+    pocket_sides: Literal[1, 2] = 1  # 2 = half the depth from each face (CG stays mid-plane, no wobble couple)
+    face_bevel_mm: float = 0.0  # 45 deg chamfer on the impact face's top edge: a sharper biting edge
+    face_bevel_sides: Literal[1, 2] = 1
+    counterbore_d_mm: float = 0.0  # counterbore around each bolt hole (bolt heads flush), from the top
+    counterbore_depth_mm: float = 0.0
+
+    def any(self) -> bool:
+        return self.pocket_depth_mm > 0 or self.face_bevel_mm > 0 or (
+            self.counterbore_d_mm > 0 and self.counterbore_depth_mm > 0)
+
+
 class Joint(Strict):
     """Bolts that drive the weapon (checked when they bear the hit: hub_support = "bolts")."""
 
     bolt_proof_mpa: float = 830.0  # 10.9 (8.8: 600, 12.9: 970)
     bolt_minor_d_mm: float | None = None  # shear through the thread; default 0.78 x the hole (M5 in 5.3: 4.13)
     min_bolt_safety_factor: float = 1.0  # shear capacity (0.6 x proof x minor area) / bolt load at the peak hit
+
+
+class Topology(Strict):
+    """`eitri topo`: density topology optimization of a base design's free region (eitri/topo/)."""
+
+    base: str  # spec of the base weapon (outline, hub, tooth): generated or imported STEP
+    keep: list[str] = ["hub:22", "rim:7", "tooth:18", "holes:3"]  # see eitri/topo/domain.py
+    envelope: bool = False  # grow the domain to the whole single-tooth bite envelope (new silhouette)
+    moi: list[float] = [1.0, 1.04, 1.08]  # MOI targets, x the reference's MOI (else the base's)
+    mass_kg: float | None = None  # default: the reference's mass (match_mass), else mass_kg.max, else the base's
+    contacts_mm: list[float] | None = None  # hit patches; default [bite, 3, 8] like the reference cases
+    objective: Literal["stress", "compliance"] = "stress"
+    mesh_mm: float = 1.5
+    rmin_mm: float = 5.0  # density filter radius: the smallest member
+    fillet_mm: float = 4.0  # pocket corner radius in the extracted design
+    iters: int = 300
 
 
 class Reference(Strict):
@@ -176,7 +208,9 @@ class Spec(Strict):
     reference: Reference | None = None
     joint: Joint = Field(default_factory=Joint)
     shaft: Shaft | None = None
-    design: dict[str, Param]
+    topology: Topology | None = None
+    machining: Machining | None = None
+    design: dict[str, Param] = Field(default_factory=dict)
 
     def free_params(self) -> dict[str, tuple[float, float]]:
         return {k: v for k, v in self.design.items() if isinstance(v, tuple)}

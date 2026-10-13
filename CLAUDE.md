@@ -32,6 +32,8 @@ Always go through the wrapper, which sets `UV_PROJECT_ENVIRONMENT`:
 ./eitri.sh eitri optimize projects/<name>/spec.toml [--trials 200] [--workers 8] [--seed 0]
 ./eitri.sh eitri refine projects/<name>/spec.toml --start <spec_fixed.toml | history.jsonl#<trial>>
 ./eitri.sh eitri compare projects/a/spec.toml [projects/b/spec.toml ...] [--ref projects/rebot/spec.toml]
+./eitri.sh eitri topo projects/<name>/spec.toml [--no-eval]   # needs [topology]; one design per MOI target
+./eitri.sh eitri faces projects/<name>/spec.toml               # numbered boundary edges + keep regions
 ./eitri.sh eitri check projects/<name>/spec.toml
 ./eitri.sh eitri materials
 ./eitri.sh eitri show projects/<name>/spec.toml   # OCP CAD Viewer panel in VS Code (needs `--extra viewer`)
@@ -125,6 +127,26 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   on the fine mesh and the best that still passes wins.
 - Balance is always solved, never tuned: every generator balances itself by Newton/secant to < 0.5 mm^3 of
   first moment, and the default `max_imbalance_gmm` is 0.1 (CG on the axis).
+- Topology (`[topology]`, eitri/topo/): domain = a base weapon's outline (or, `envelope = true`, the whole
+  single-tooth bite envelope) with its hub holes and pockets filled; `keep` selectors (hub, rim, tooth, holes,
+  edge:I:W from `eitri faces`, circle, box) stay solid. SIMP on linear triangles (own numpy/scipy FE, fem.py)
+  minimizing the p-norm von Mises of the in-plane hits (bite, 3, 8 mm; inertia relief with alpha = T/I(x)) plus
+  the out-of-plane hit (DKT plate bending, plate.py, validated vs cantilever), sqrt(x) stress relaxation,
+  density filter (`rmin_mm` = smallest member), Heaviside projection (beta 1 -> 32: grey density is cheap
+  mass that carries nothing). Mass, MOI and both first moments are exact linear constraints on the projected
+  densities, re-linearized every iteration and enforced by a semismooth-Newton projection. Adjoint gradients
+  are checked against finite differences (tests). Compliance objective exists but thins hub necks (blind to
+  stress concentration). Extraction (extract.py): 0.5 iso-contour -> smoothed rings; voids reaching the
+  outline run past it (clean booleans; the outline stays exact where material reaches it).
+- `topo` weapon (geometry/topo.py): pockets offset/clipped/opened on shapely polygons (OCC 2D offsets of
+  offset-built boundaries silently drop pieces), min web between pockets, one periodic spline per pocket;
+  Newton on pocket offsets (common offset for the mass + two pockets' offsets, or a pocket turn when there are
+  only two) holds mass and puts the CG on the axis; islands are dropped (largest face kept).
+- Machining (`[machining]`, geometry/machining.py): blind pockets (depth, 1 or 2 sides), 45 deg face bevel
+  (an explicit wedge: OCC's chamfer follows tangent edges around the root fillet), counterbores. Mass = 2D
+  plate + exact signed parts; the features' first moment goes into the hook/topo Newton (`pocket_depth_frac`,
+  `extra_*`; estimated, then once more exact); 2D FEA gets per-element thickness sections; 3D/STEP use the
+  real solid. OCC's 3D volume of plates with B-spline pocket walls is ~60 mm^3 off by itself: never use it.
 - Center of percussion is intentionally not an objective: a balanced rotor's axle always reacts the full
   impulse. Imbalance is a hard constraint; we report impulse / peak force / inward force fraction.
 

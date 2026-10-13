@@ -150,12 +150,12 @@ def compare_cheap(mine: dict, ref: dict, match_mass: bool = True) -> list[Check]
     checks = [Check("ref_energy", mine["energy_j"] >= ref["energy_j"], mine["energy_j"], ref["energy_j"],
                     "stored energy vs the reference")]
     if match_mass:
-        checks.append(Check("ref_mass", mine["mass_kg"] <= ref["mass_kg"], mine["mass_kg"], ref["mass_kg"],
+        checks.append(Check("ref_mass", mine["mass_kg"] <= ref["mass_kg"] * (1 + 1e-6), mine["mass_kg"], ref["mass_kg"],
                             "a replacement weapon gets the reference's mass budget"))
     ratios = {d: mine["tooth_width_mm"][d] / ref["tooth_width_mm"][d] for d in ref["tooth_width_mm"]
               if ref["tooth_width_mm"][d] > 0}
     d = min(ratios, key=ratios.get)
-    checks.append(Check("ref_tooth_width", ratios[d] >= 1.0, ratios[d], 1.0,
+    checks.append(Check("ref_tooth_width", ratios[d] >= 1.0 - 1e-6, ratios[d], 1.0,
                         f"tooth width / reference at every depth; narrowest {d} mm below the tip: "
                         f"{mine['tooth_width_mm'][d]:.1f} vs {ref['tooth_width_mm'][d]:.1f} mm"))
     return checks

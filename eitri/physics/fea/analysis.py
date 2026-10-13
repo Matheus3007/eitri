@@ -60,7 +60,24 @@ def _nearest(mesh: Mesh2D, x: float, y: float) -> int:
     return int(np.argmin(np.hypot(mesh.nodes[:, 0] - x, mesh.nodes[:, 1] - y))) + 1
 
 
-def _element_mass_midside(mesh: Mesh2D, thickness: float, density_t_mm3: float) -> np.ndarray:
+def element_thickness(mesh: Mesh2D, weapon) -> np.ndarray | float:
+    """Plate thickness per element: the nominal one, reduced where [machining] thins the plate."""
+    t = weapon.params.thickness_mm
+    regions = getattr(weapon, "thickness_regions", lambda: [])()
+    if not regions:
+        return t
+    from matplotlib.path import Path as MPath
+
+    c = mesh.nodes[mesh.elems[:, :3] - 1].mean(axis=1)
+    te = np.full(len(mesh.elems), t)
+    for face, ti in regions:
+        w = face.outer_wire()
+        poly = np.array([(p.X, p.Y) for p in (w.position_at(u) for u in np.linspace(0, 1, 400))])
+        te[MPath(poly).contains_points(c)] = ti
+    return te
+
+
+def _element_mass_midside(mesh: Mesh2D, thickness, density_t_mm3: float) -> np.ndarray:
     """Mass lumped on midside nodes (consistent load vector of a T6 under uniform body force: corners 0)."""
     n, e = mesh.nodes, mesh.elems - 1
     area = 0.5 * np.abs((n[e[:, 1], 0] - n[e[:, 0], 0]) * (n[e[:, 2], 1] - n[e[:, 0], 1])
@@ -157,7 +174,8 @@ def run(weapon, E_mpa: float, nu: float, density: float, omega_rad_s: float, pea
         torque += mid[0] * f[1] - mid[1] * f[0]
 
     density_t_mm3 = density * 1e-12
-    m_node = _element_mass_midside(mesh, t, density_t_mm3)
+    te = element_thickness(mesh, weapon)
+    m_node = _element_mass_midside(mesh, te, density_t_mm3)
     i_mesh = float((m_node * (xy[:, 0] ** 2 + xy[:, 1] ** 2)).sum())  # t*mm^2
     alpha = torque / i_mesh  # rad/s^2
     # d'Alembert inertial load -m * (alpha z x r) = -m * alpha * (-y, x)
@@ -204,7 +222,7 @@ def run(weapon, E_mpa: float, nu: float, density: float, omega_rad_s: float, pea
 
     results = []
     for case in cases:
-        res = solve(mesh, t, E_mpa, nu, density, case, threads=threads, keep_dir=keep_dir)
+        res = solve(mesh, te, E_mpa, nu, density, case, threads=threads, keep_dir=keep_dir)
         zones = {"body": body, "contact": contact_zone, "support": support_zone}
         results.append(FeaCase(case.name, res, zones))
     return FeaRun(mesh, results, (tuple(tip), tuple(c_end)), supports, float(np.linalg.norm(f_vec)), hub_support,

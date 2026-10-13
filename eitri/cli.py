@@ -447,6 +447,53 @@ def compare_cmd(
     typer.echo(f"run: {run}")
 
 
+@app.command("faces")
+def faces_cmd(spec_path: Path):
+    """Numbered map of the design domain's boundary edges (plate side faces) and keep regions: faces.png +
+    faces.json, for writing [topology] keep selectors such as edge:12:6."""
+    from eitri.topo.run import faces_map
+
+    spec = spec_mod.load(spec_path)
+    out = _run_dir(spec_path, "faces")
+    d = faces_map(spec, out)
+    typer.echo(f"{len(d['edges'])} edges, domain {d['domain_area_mm2']:.0f} mm^2, keep {d['keep_area_mm2']:.0f} mm^2")
+    typer.echo(f"run: {out}")
+
+
+@app.command("topo")
+def topo_cmd(
+    spec_path: Path,
+    no_eval: bool = typer.Option(False, "--no-eval", help="only the density fields and pockets"),
+    fine: bool = typer.Option(False, "--fine", help="evaluate the designs on the verification mesh"),
+):
+    """Topology optimization of the [topology] base's free region, one design per MOI target; each design
+    is balanced (Newton), evaluated and compared like any other (spec.toml per design, run it with eval)."""
+    from eitri.topo.run import run
+
+    spec = spec_mod.load(spec_path)
+    if spec.topology is None:
+        raise typer.BadParameter("the spec needs a [topology] section")
+    out = _run_dir(spec_path, "topo")
+    rows = run(spec, spec_path, out, log=typer.echo)
+    if not no_eval:
+        for r in rows:
+            dspec = spec_mod.load(r["spec"])
+            run_d = Path(r["dir"]) / "eval"
+            run_d.mkdir(exist_ok=True)
+            res = evaluate(dspec, fine=fine, keep_fea_dir=run_d / "fea", full_reference=True)
+            o = _write_outputs(run_d, dspec, Path(r["spec"]), [res])
+            r["ok"], r["failed"] = res.get("ok", False), res.get("failed", [res.get("error")])
+            if "error" not in res:
+                r |= {"energy_j": res["impact"]["energy_j"], "mass_kg": res["mass"]["mass_kg"],
+                      "imbalance_gmm": res["mass"]["static_imbalance_gmm"]}
+                if o.get("compare"):
+                    worse = [x["group"] + ": " + x["item"] for x in next(iter(o["compare"].values())) if x["worse"]]
+                    r["worse_than_reference"] = worse
+            typer.echo(f"  MOI {r['moi_frac']:.3f}: " + _summary(res).replace("\n", "\n    "))
+        (out / "topo.json").write_text(json.dumps(_clean(rows), indent=2))
+    typer.echo(f"run: {out}")
+
+
 @app.command()
 def check(spec_path: Path):
     """Fast geometry + constraint checks only (no files). Exit code 1 if anything fails."""

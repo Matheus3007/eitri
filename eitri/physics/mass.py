@@ -10,6 +10,7 @@ import math
 from dataclasses import asdict, dataclass
 
 import build123d as bd
+import numpy as np
 
 
 @dataclass
@@ -40,9 +41,30 @@ def _plate(profile: bd.Face, t: float):
     return a * t, bd.Vector(c.X(), c.Y(), 0.0), tensor
 
 
-def mass_props(solid: bd.Solid, density_kg_m3: float, plate: tuple[bd.Face, float] | None = None) -> MassProps:
-    """`plate` = (profile, thickness) when the solid is that profile extruded symmetrically about z=0."""
-    if plate is not None:
+def plate_part(face: bd.Face, t: float, z: float) -> tuple[float, np.ndarray, np.ndarray]:
+    """(volume, centroid, unit-density tensor about the centroid) of `face` extruded t, centered at height z."""
+    v, c, T = _plate(face, t)
+    return v, np.array([c.X, c.Y, z]), np.array(T)
+
+
+def combine(parts) -> tuple[float, "bd.Vector", list[list[float]]]:
+    """Sum of signed parts (sign, volume, centroid, tensor about centroid): volume, CG, tensor about the CG."""
+    vol = sum(s * v for s, v, _, _ in parts)
+    cg = sum(s * v * np.asarray(c) for s, v, c, _ in parts) / vol
+    T = np.zeros((3, 3))
+    for s, v, c, Ti in parts:
+        d = np.asarray(c) - cg
+        T += s * (np.asarray(Ti) + v * ((d @ d) * np.eye(3) - np.outer(d, d)))
+    return vol, bd.Vector(*cg), T.tolist()
+
+
+def mass_props(solid: bd.Solid, density_kg_m3: float, plate: tuple[bd.Face, float] | None = None,
+               parts=None) -> MassProps:
+    """`plate` = (profile, thickness) when the solid is that profile extruded symmetrically about z=0;
+    `parts` = exact signed parts (machined plates, see geometry/machining.py)."""
+    if parts:
+        vol_mm3, c, tensor_unit = combine(parts)
+    elif plate is not None:
         vol_mm3, c, tensor_unit = _plate(*plate)
     else:
         vol_mm3, c, tensor_unit = solid.volume, solid.center(bd.CenterOf.MASS), solid.matrix_of_inertia
