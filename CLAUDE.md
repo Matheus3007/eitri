@@ -156,7 +156,7 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   real solid. OCC's 3D volume of plates with B-spline pocket walls is ~60 mm^3 off by itself: never use it.
 - Explicit impact (eitri/physics/explicit/, `eitri impact`): OpenCourant -- the community fork of OpenRadioss
   (Siemens shut OpenRadioss down in 2026; AGPL v3, linux64 zip extracted to ~/opt/OpenCourant, run only through
-  `tools/opencourant.sh`, which the user allowed in .claude/settings.local.json; the sandbox blocks running
+  `tools/opencourant.sh`, which the user allowed in .claude/settings.json; the sandbox blocks running
   downloaded binaries any other way). Block-format decks written by radioss.py (formats read from
   ~/opt/OpenCourant/hm_cfg_files/config/CFG/radiossYYYY/*.cfg: take the newest FORMAT block -- `ls` sorts
   radioss110 after radioss2025). Units mm/ms/kg -> kN, GPa, J, m/s. Model: weapon tet10 (gmsh, ccx node order
