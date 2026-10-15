@@ -201,10 +201,18 @@ def postprocess(folder: Path, name: str, info: dict, weapon, omega_rad_s: float,
     time = th["time"]
     keys = list(th)
     # contact force magnitude: the interface's normal force components (name varies with the version)
-    # the interface's variables in the order requested (FNX FNY FNZ FTX FTY FTZ), whatever their header says
-    icols = [k for k in keys if k.lower().startswith("contact")]
-    fn = np.sqrt(sum(th[k] ** 2 for k in icols[:3])) if len(icols) >= 3 else np.zeros_like(time)
-    ft = np.sqrt(sum(th[k] ** 2 for k in icols[3:6])) if len(icols) >= 6 else np.zeros_like(time)
+    # the interface's variables in the order requested (FNX FNY FNZ FTX FTY FTZ), whatever their header says.
+    # Radioss stores interface forces as *cumulative impulses* (kN ms = N s): the force is their derivative.
+    icols = [k for k in keys if k.lower().startswith("contact") and " var " in k]  # not CONTACT ENERGY
+    if len(icols) >= 6:
+        In = np.c_[[th[k] for k in icols[:3]]].T
+        It = np.c_[[th[k] for k in icols[3:6]]].T
+        fn = np.linalg.norm(np.gradient(In, time, axis=0), axis=1)
+        ft = np.linalg.norm(np.gradient(It, time, axis=0), axis=1)
+        normal_impulse = float(np.linalg.norm(In[-1]))
+    else:
+        fn = ft = np.zeros_like(time)
+        normal_impulse = 0.0
     out = {"time_ms": [float(time[0]), float(time[-1])], "th_columns": keys,
            "peak_friction_kn": float(ft.max()) if ft.any() else 0.0}
     if "PERCENTAGE ADDED MASS" in th:
@@ -212,7 +220,7 @@ def postprocess(folder: Path, name: str, info: dict, weapon, omega_rad_s: float,
     if fn.any():
         i = int(np.argmax(fn))
         above = np.nonzero(fn > 0.1 * fn[i])[0]
-        impulse = float(np.trapezoid(fn, time))  # kN ms = N s
+        impulse = normal_impulse
         out |= {"peak_force_kn": float(fn[i]), "peak_at_ms": float(time[i]),
                 "pulse_ms": float(time[above[-1]] - time[above[0]]), "impulse_ns": impulse,
                 # the half-sine with this impulse and peak has this duration: compare with contact_time_ms
@@ -236,6 +244,10 @@ def postprocess(folder: Path, name: str, info: dict, weapon, omega_rad_s: float,
         out |= _field_summary(vdir / f"{frames[-1].name}.vtk", weapon, vdir / f"{frames[0].name}.vtk")
         for fr in frames:  # the binary animation files are converted; keep the folder small
             fr.unlink()
+    elif (folder / "vtk").exists():  # already converted (post-processing again)
+        vt = sorted((folder / "vtk").glob(f"{name}A[0-9][0-9][0-9].vtk"))
+        if vt:
+            out |= _field_summary(vt[-1], weapon, vt[0])
     return out
 
 

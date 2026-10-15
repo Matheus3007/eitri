@@ -169,9 +169,12 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   (tiny tets at the R1 lock fillets set ~5 ns; added mass ~0.2 %). Outputs: contact pulse (peak, duration,
   impulse, equivalent half-sine), energies, plastic strain/failed elements per region (tip excluded = denting,
   2 mm hub layer excluded = rigid-boundary artifact), every frame as VTK + .pvd under vtk/ (for the future
-  visualizer). ~15 min per 1 ms run with 5 threads. First Rebot bite hit: pulse ~0.95 ms (equivalent half-sine
-  1.3 ms), between the 0.67 ms calibration and the team's 2 ms window; a full-bite hit on a 1.36 kg opponent
-  takes most of the weapon's energy, as the momentum model says.
+  visualizer). ~15 min per 1 ms run with 5 threads. Radioss writes interface forces to the time history as
+  *cumulative impulses* (the force is their derivative); "CONTACT ENERGY" is a global column, not the interface.
+  Rebot bite hit vs a hardened-steel opponent face: impulse 10.8 N s (momentum model 9.7), pulse ~0.3 ms with a
+  ~90 kN peak (equivalent half-sine 0.19 ms -- the static 0.67 ms calibration is a stand-in, softer armor
+  lengthens it), the weapon loses ~290 J; Rebot's peak hub plastic strain sits at the static model's first-yield
+  spot (hub neck, ~(8, 30) mm): both models agree on where it gives.
 - Center of percussion is intentionally not an objective: a balanced rotor's axle always reacts the full
   impulse. Imbalance is a hard constraint; we report impulse / peak force / inward force fraction.
 
