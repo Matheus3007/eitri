@@ -34,6 +34,7 @@ Always go through the wrapper, which sets `UV_PROJECT_ENVIRONMENT`:
 ./eitri.sh eitri compare projects/a/spec.toml [projects/b/spec.toml ...] [--ref projects/rebot/spec.toml]
 ./eitri.sh eitri topo projects/<name>/spec.toml [--no-eval]   # needs [topology]; one design per MOI target
 ./eitri.sh eitri faces projects/<name>/spec.toml               # numbered boundary edges + keep regions
+./eitri.sh eitri impact projects/<name>/spec.toml [--case bite|tip3|all] [--no-ref]   # explicit 3D hit
 ./eitri.sh eitri check projects/<name>/spec.toml
 ./eitri.sh eitri materials
 ./eitri.sh eitri show projects/<name>/spec.toml   # OCP CAD Viewer panel in VS Code (needs `--extra viewer`)
@@ -153,6 +154,24 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   plate + exact signed parts; the features' first moment goes into the hook/topo Newton (`pocket_depth_frac`,
   `extra_*`; estimated, then once more exact); 2D FEA gets per-element thickness sections; 3D/STEP use the
   real solid. OCC's 3D volume of plates with B-spline pocket walls is ~60 mm^3 off by itself: never use it.
+- Explicit impact (eitri/physics/explicit/, `eitri impact`): OpenCourant -- the community fork of OpenRadioss
+  (Siemens shut OpenRadioss down in 2026; AGPL v3, linux64 zip extracted to ~/opt/OpenCourant, run only through
+  `tools/opencourant.sh`, which the user allowed in .claude/settings.local.json; the sandbox blocks running
+  downloaded binaries any other way). Block-format decks written by radioss.py (formats read from
+  ~/opt/OpenCourant/hm_cfg_files/config/CFG/radiossYYYY/*.cfg: take the newest FORMAT block -- `ls` sorts
+  radioss110 after radioss2025). Units mm/ms/kg -> kN, GPa, J, m/s. Model: weapon tet10 (gmsh, ccx node order
+  = Radioss order), Johnson-Cook plasticity fitted from yield/UTS/elongation (materials.johnson_cook(),
+  Considere at UTS) and JC damage shaped like 4340's triaxiality curve, scaled to `fracture_strain` in tension
+  (a constant fracture strain erodes merely-crushed tooth material); rigid hub (RBODY on the hole walls) free
+  about Z with the drive inertia -- it needs /INIVEL/ROT on its master node besides /INIVEL/AXIS on the nodes;
+  opponent block of the opponent's mass, deformable skin (weapon's own steel by default) on a rigid backing,
+  closing at the closing speed, engaging the bite or the outer 3 mm; TYPE7 contact; mass scaling floor 30 ns
+  (tiny tets at the R1 lock fillets set ~5 ns; added mass ~0.2 %). Outputs: contact pulse (peak, duration,
+  impulse, equivalent half-sine), energies, plastic strain/failed elements per region (tip excluded = denting,
+  2 mm hub layer excluded = rigid-boundary artifact), every frame as VTK + .pvd under vtk/ (for the future
+  visualizer). ~15 min per 1 ms run with 5 threads. First Rebot bite hit: pulse ~0.95 ms (equivalent half-sine
+  1.3 ms), between the 0.67 ms calibration and the team's 2 ms window; a full-bite hit on a 1.36 kg opponent
+  takes most of the weapon's energy, as the momentum model says.
 - Center of percussion is intentionally not an objective: a balanced rotor's axle always reacts the full
   impulse. Imbalance is a hard constraint; we report impulse / peak force / inward force fraction.
 

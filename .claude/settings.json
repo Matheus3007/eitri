@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./tools/opencourant.sh:*)",
+      "Bash(./eitri.sh:*)"
+    ]
+  }
+}

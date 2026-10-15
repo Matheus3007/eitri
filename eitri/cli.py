@@ -447,6 +447,56 @@ def compare_cmd(
     typer.echo(f"run: {run}")
 
 
+@app.command("impact")
+def impact_cmd(
+    spec_path: Path,
+    case: str = typer.Option("bite", help="bite | tip3 | all"),
+    ref: bool = typer.Option(True, help="also run the [reference] weapon, same setup, and compare"),
+    tstop: float = typer.Option(1.0, help="simulated time [ms]"),
+    threads: int = typer.Option(8, help="solver threads per run"),
+):
+    """Explicit 3D impact (OpenCourant): the spinning weapon hits the opponent; contact pulse, energy, plastic
+    strain and failure per region, VTK frames for the visualizer. Needs tools/opencourant.sh (see it)."""
+    from eitri.evaluate import single_tooth_bite_mm
+    from eitri.physics import drive as drive_mod
+    from eitri.physics.explicit import impact3d
+
+    spec = spec_mod.load(spec_path)
+    run = _run_dir(spec_path, "impact")
+    cases = ["bite", "tip3"] if case == "all" else [case]
+    targets = [("design", spec)]
+    if ref and spec.reference is not None:
+        targets.append(("reference", spec_mod.load(spec.reference.spec)))
+    rows: dict = {c: {} for c in cases}
+    for tag, sp in targets:
+        from eitri.evaluate import build_weapon
+
+        w = build_weapon(sp, sp.fixed_design())
+        mat = materials.get(sp.material.names()[0])
+        omega = drive_mod.top_speed_rad_s(sp.drive)
+        J = (sp.drive.motor.rotor_inertia_kgm2 if sp.drive.motor else 0.0) * sp.drive.ratio ** 2
+        for c in cases:
+            folder = run / f"{tag}_{c}"
+            setup = impact3d.ImpactSetup(case=c, tstop_ms=tstop, threads=threads)
+            typer.echo(f"  {tag} {c}: running ...")
+            r = impact3d.simulate(w, mat, omega, sp.context.opponent_mass_kg, sp.context.closing_speed_mps,
+                                  single_tooth_bite_mm(sp), J, folder, setup)
+            if not r.ok:
+                typer.echo(f"  {tag} {c}: FAILED\n{r.log[-1500:]}")
+                raise typer.Exit(1)
+            (folder / "metrics.json").write_text(json.dumps(_clean(r.metrics), indent=1))
+            rows[c][tag] = impact3d.summary(r.metrics)
+            typer.echo(f"  {tag} {c}: " + ", ".join(f"{k} {v:.4g}" for k, v in rows[c][tag].items()
+                                                  if isinstance(v, float)))
+    out = {"cases": rows}
+    if all("reference" in v for v in rows.values()):
+        md = impact3d.compare_md(rows, spec_mod.load(spec.reference.spec).name, spec.name)
+        (run / "impact_compare.md").write_text(md)
+        typer.echo(md)
+    (run / "impact.json").write_text(json.dumps(_clean(out), indent=1))
+    typer.echo(f"run: {run}")
+
+
 @app.command("faces")
 def faces_cmd(spec_path: Path):
     """Numbered map of the design domain's boundary edges (plate side faces) and keep regions: faces.png +
