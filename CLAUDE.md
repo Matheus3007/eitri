@@ -182,9 +182,16 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   `.eitri_reference_impact/` next to its spec (key: spec text, case, setup, IMPACT_VERSION). Skipped (with a
   message) when OpenCourant isn't installed.
 - TPU opponent (`eitri impact --opponent tpu`, physics/explicit/tpu.py): a 3D-printed TPU 95A wall -- solid skin
-  (Ogden + Prony series) over a homogenized 15 % gyroid core (LAW70 rate-dependent foam), torn elements deleted
-  at 4.5-5.5 strain (without it crushed TPU distorts until mass scaling explodes: "TOTAL MASS ERROR LIMIT").
-  Single-element checks (projects/tpu_check): skin E ~27 MPa, core plateau 0.06 MPa; at 5000/s ~1.8x / 2x.
+  (one-term Ogden = neo-Hookean, nu 0.45, + Prony series) over a homogenized 15 % gyroid core (LAW70
+  rate-dependent foam), torn at 4.5-5.5 strain; the wall is held by the robot's mass along its far edges (a
+  rigid back face made a cut-through tooth hit an infinitely stiff plate). What it took to make it run (each
+  one killed runs with "TOTAL MASS ERROR LIMIT" / NaN / negative volume): TYPE25 contact, weapon surface vs
+  /SURF/PART/ALL of the TPU (TYPE7 node-to-surface spiked at the sharp tooth corner); TPU bricks Isolid 24 +
+  Icontrol 1 (fully integrated ones inverted); /DT/BRICK/DEL 10 ns for the TPU bricks (it ignores tet10) on top
+  of the weapon's nodal mass scaling; near-cubic TPU elements; nu 0.45 (0.48+ goes unstable past ~80 %
+  compression). Engine /DT cards are fixed-column (20+1+20): a free-format line is misread and deletes
+  healthy elements. Single-element checks (projects/tpu_check): skin E ~27 MPa, core plateau 0.06 MPa; at
+  5000/s ~1.8x / 2x.
   Trust: order of magnitude of the pulse and design-vs-design ranking; validation data listed in tpu.py.
 - UI (eitri/ui/, `eitri ui`): stdlib HTTP server over the project files + one page (three.js from jsdelivr).
   Every simulation becomes the same animation bundle (ui/anim.py: manifest.json, mesh.bin, frames.bin,

@@ -55,9 +55,11 @@ class Deck:
     def part(self, pid: int, title: str, prop: int, mat: int) -> None:
         self.add(f"/PART/{pid}", title, _i(prop, mat, 0))
 
-    def prop_solid(self, pid: int, title: str, isolid: int = 0, itetra10: int = 0) -> None:
+    def prop_solid(self, pid: int, title: str, isolid: int = 0, itetra10: int = 0, icontrol: int = 0) -> None:
+        """`icontrol` = 1: distortion control (soft materials: foams, rubbers) -- keeps crushed elements from
+        inverting."""
         self.add(f"/PROP/TYPE14/{pid}", title, _i(isolid, 0, 0, 0, itetra10, 0, 0, 0) + _f(0.0),
-                 _f(0, 0, 0, 0, 0), _f(0, 0, 0, 0, 0), _i(0, 0, 0))
+                 _f(0, 0, 0, 0, 0), _f(0, 0, 0, 0, 0), _i(0, 0, icontrol))
 
     def mat_elastic(self, mid: int, title: str, rho: float, E: float, nu: float) -> None:
         self.add(f"/MAT/LAW1/{mid}", title, _f(rho), _f(E, nu))
@@ -105,6 +107,19 @@ class Deck:
         self.add(f"/FAIL/JOHNSON/{mid}", _f(*D), _f(eps_dot0) + _i(0, 1) + _f(0.0, 0.0) + " " * 10 + _i(0),
                  _i(0))
 
+    def surf_part_all(self, sid: int, title: str, parts) -> None:
+        """Every face of solid parts, internal ones included: eroding contacts see material exposed by deletion."""
+        self.add(f"/SURF/PART/ALL/{sid}", title, *_ids(parts))
+
+    def inter25(self, iid: int, title: str, surf1: int, surf2: int, fric: float = 0.1, idel: int = 1,
+                iedge: int = 1) -> None:
+        """Symmetric surface-to-surface penalty contact (TYPE25): robust at sharp edges (`iedge` = 1) and with
+        eroding solids (`idel`)."""
+        self.add(f"/INTER/TYPE25/{iid}", title, _i(surf1, surf2, 0, 0, 0, 0) + " " * 10 + _i(idel, iedge, 0),
+                 _i(0) + " " * 10 + _f(0.0, 0.0, 0.0, 0.0), _f(0.0, 0.0) + _i(0, 0) + _f(0.0, 0.0),
+                 _f(0.0, fric, 0.0, 0.0, 0.0), " " * 7 + "000" + " " * 10 + _i(0, 0) + _f(0.0) + _i(0) + " " * 10 + _f(0.0),
+                 _i(0, 0) + _f(0.0) + " " * 10 + _i(0) + _f(0.0) + " " * 10 + _i(0))
+
     def grnod(self, gid: int, title: str, ids) -> None:
         self.add(f"/GRNOD/NODE/{gid}", title, *_ids(ids))
 
@@ -135,9 +150,10 @@ class Deck:
         self.add(f"/INIVEL/TRA/{iid}", title, _f(*v) + _i(grnod, 0), _f(0.0) + _i(0))
 
     def inter7(self, iid: int, title: str, grnod: int, surf: int, gapmin: float = 0.1, fric: float = 0.1,
-               istf: int = 4, stfac: float = 1.0) -> None:
-        """Node-to-surface penalty contact (nodes of `grnod` against `surf`)."""
-        self.add(f"/INTER/TYPE7/{iid}", title, _i(grnod, surf, istf, 0, 0) + " " * 10 + _i(0, 0, 0, 0),
+               istf: int = 4, stfac: float = 1.0, idel: int = 0) -> None:
+        """Node-to-surface penalty contact (nodes of `grnod` against `surf`). `idel` = 2: a segment leaves the
+        contact as soon as one of its elements is deleted (eroding/cut materials)."""
+        self.add(f"/INTER/TYPE7/{iid}", title, _i(grnod, surf, istf, 0, 0) + " " * 10 + _i(0, idel, 0, 0),
                  _f(0.0, 0.0, 0.0) + " " * 20 + _i(0, 0), _f(0.0, 0.0, 0.0, 0.0) + _i(0, 0),
                  _f(stfac, fric, gapmin, 0.0, 0.0), " " * 7 + "000" + " " * 20 + _i(0) + _f(0.0, 0.0, 0.0),
                  _i(0, 0) + _f(0.0) + _i(0, 0, 0) + _f(0.0) + _i(0))
@@ -147,11 +163,18 @@ class Deck:
 
     # --- engine -------------------------------------------------------------------------------------
     def run(self, tstop_ms: float, anim_dt_ms: float, th_dt_ms: float, anim_elem=("VONM", "EPSP"),
-            dt_min_ms: float = 0.0) -> None:
-        """`dt_min_ms` > 0: nodal mass scaling up to that time step (the added mass is in the time history)."""
+            dt_min_ms: float = 0.0, solid_cst_ms: float = 0.0, brick_delete_ms: float = 0.0) -> None:
+        """`dt_min_ms` > 0: nodal mass scaling up to that time step (the added mass is in the time history).
+        `solid_cst_ms` > 0 instead: a solid whose step falls below it switches to a small-strain formulation at
+        that constant step (no added mass, no deletion) -- the robust choice with crushable soft materials."""
         dt = ["/DT/NODA/CST/0", f"0.67 {dt_min_ms:g}"] if dt_min_ms > 0 else []
+        if solid_cst_ms > 0:
+            # fixed columns (20 + 1 + 20): a free-format line is misread
+            dt += ["/DT/BRICK/CST", f"{0.67:<20g} {solid_cst_ms:<20g}"]
+        if brick_delete_ms > 0:  # bricks (hexas; not the tet10) whose step falls below it are deleted
+            dt += ["/DT/BRICK/DEL", f"{0.67:<20g} {brick_delete_ms:<20g}"]
         self.engine = [f"/RUN/{self.name}/1/", f"{tstop_ms:g}", *dt, "/ANIM/DT", f"0 {anim_dt_ms:g}",
-                       *[f"/ANIM/ELEM/{a}" for a in anim_elem], "/ANIM/VECT/VEL", "/ANIM/VECT/CONT",
+                       *[f"/ANIM/ELEM/{a}" for a in anim_elem], "/ANIM/VECT/VEL", "/ANIM/VECT/CONT", "/ANIM/NODA/DMAS",
                        "/TFILE/0", f"{th_dt_ms:g}", "/PRINT/-500", "/VERS/2026"]
 
     def write(self, folder: Path) -> Path:

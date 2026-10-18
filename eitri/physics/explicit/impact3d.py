@@ -57,6 +57,7 @@ class ImpactSetup:
     # (eitri/physics/explicit/tpu.py), what most beetleweights actually wear
     opponent: str = "steel"
     tpu: object = None  # tpu.TPUWall; default TPUWall()
+    reverse_contact: bool = True  # TPU: also every opponent node against the weapon surface
 
 
 @dataclass
@@ -120,14 +121,22 @@ def build(weapon, mat, omega_rad_s: float, opponent_mass_kg: float, closing_mps:
         from eitri.physics.explicit.tpu import TPUWall
 
         wall = setup.tpu or TPUWall()
-        depth_r, half_z = 40.0, max(20.0, t)
+        depth_r, half_z = 60.0, max(30.0, t)
         sk, co = wall.skin_mm, wall.core_mm
-        gy = np.unique(np.concatenate([lin(0, sk, 0.5), lin(sk, sk + co, 1.5), lin(sk + co, 2 * sk + co, 0.5)]))
-        loc, br = _grid_mesh(lin(R - c_len, R - c_len + depth_r, 1.5), gy, lin(-half_z, half_z, 2.0))
+        # near-cubic elements (aspect <= ~2): thin flat skin elements (0.5 x 2.5 mm) invert when the tooth crushes
+        # them and the run ends in NaN; finer where the tooth arrives (the first ~25 mm radially, |z| < 10 mm)
+        gy = np.unique(np.concatenate([lin(0, sk, 1.0), lin(sk, sk + co, 1.5), lin(sk + co, 2 * sk + co, 1.0)]))
+        gx = np.unique(np.concatenate([lin(R - c_len, R - c_len + 25, 1.25), lin(R - c_len + 25, R - c_len + depth_r, 3.0)]))
+        gz = np.unique(np.concatenate([lin(-half_z, -10, 3.0), lin(-10, 10, 1.25), lin(10, half_z, 3.0)]))
+        loc, br = _grid_mesh(gx, gy, gz)
         thick_t = wall.thickness_mm
         yc = loc[br][:, :, 1].mean(axis=1)
         epart = np.where((yc < sk) | (yc > sk + co), 2, 3)  # skins: part 2, core: part 3
-        backing = np.abs(loc[:, 1] - thick_t) < 1e-9  # the robot's mass hangs on the back skin
+        # the wall is held by the robot along its far edges (the far radial end and the top/bottom), not glued
+        # to a rigid block over its whole back face: it flexes as a panel, and a tooth that cuts through exits
+        # into free space instead of hitting an infinitely stiff plate
+        x0, x1 = R - c_len, R - c_len + depth_r
+        backing = (np.abs(loc[:, 0] - x1) < 1e-9) | (np.abs(np.abs(loc[:, 2]) - half_z) < 1e-9)
         vol_skin = 2 * sk * depth_r * 2 * half_z
         box_mass = wall.rho_s * 1e-9 * (vol_skin + wall.infill * co * depth_r * 2 * half_z)
     else:
@@ -158,7 +167,9 @@ def build(weapon, mat, omega_rad_s: float, opponent_mass_kg: float, closing_mps:
     d.prop_solid(1, "weapon tetra10", isolid=0, itetra10=1000)
     if setup.opponent == "tpu":
         wall.write(d, 2, 3, 900)
-        d.prop_solid(2, "TPU bricks", isolid=17)  # fully integrated: large strains, no hourglass modes
+        # one-point, physically stabilized bricks with distortion control: the fully integrated ones turned
+        # inside out under the tooth ("zero or negative sub-volume" stops the run)
+        d.prop_solid(2, "TPU bricks", isolid=24, icontrol=1)
         d.part(2, "opponent TPU skin", 2, 2)
         d.part(3, "opponent TPU gyroid core", 2, 3)
     else:
@@ -199,14 +210,27 @@ def build(weapon, mat, omega_rad_s: float, opponent_mass_kg: float, closing_mps:
 
     near = (r > R - weapon.tooth_depth_mm() - 15) & (np.hypot(xy[:, 0] - tip[0], xy[:, 1] - tip[1]) < 60)
     d.grnod(6, "tooth nodes", np.nonzero(near)[0] + 1)
-    d.surf_part(1, "opponent surface", opp_parts)
-    d.inter7(1, "tooth vs opponent", 6, 1, gapmin=0.2, fric=setup.friction)
+    if setup.opponent != "tpu":
+        d.surf_part(1, "opponent surface", opp_parts)
+    if setup.opponent == "tpu":
+        # one symmetric surface-to-surface contact: the weapon's skin against every TPU face (internal ones too,
+        # so material exposed by tearing is in contact). Node-to-surface pairs (TYPE7) spiked at the sharp tooth
+        # corner and the run ended in NaN; TYPE25 treats edges and eroding solids properly
+        d.surf_part(2, "weapon surface", [1])
+        d.surf_part_all(3, "TPU, all faces", opp_parts)
+        d.inter25(1, "weapon vs TPU", 2, 3, fric=setup.friction, idel=1, iedge=1)
+    else:
+        d.inter7(1, "tooth vs opponent", 6, 1, gapmin=0.2, fric=setup.friction, idel=2)
 
     d.th("INTER", 1, "contact", ["FNX", "FNY", "FNZ", "FTX", "FTY", "FTZ"], [1])
     d.th("RBODY", 2, "hub and opponent", ["DEF"], [1, 2])
     d.th("PART", 3, "parts", ["DEF"], [1, *opp_parts])
     d.run(setup.tstop_ms, setup.anim_dt_ms, setup.anim_dt_ms / 10, anim_elem=("VONM", "EPSP"),
-          dt_min_ms=setup.dt_min_ms)
+          # TPU: crushed bricks switch to small strain at a constant step (/DT/BRICK/CST, bricks only -- the
+          # weapon's tet10 keep nodal mass scaling); otherwise crushed TPU drove the nodal mass scaling without
+          # bound on nodes left by torn elements ("TOTAL MASS ERROR LIMIT")
+          # and a TPU brick whose step falls under 10 ns is deleted before it can invert (crushed, cut away)
+          dt_min_ms=setup.dt_min_ms, brick_delete_ms=1e-5 if setup.opponent == "tpu" else 0.0)
     d.write(folder)
     return {"n_weapon_nodes": n_w, "n_elems": len(m.elems), "R": R, "a_tip": a_tip, "contact_mm": c_len,
             "e_r": e_r.tolist(), "opponent_mass_kg": rb_mass + box_mass, "hub_nodes": int(on_hub.sum())}
@@ -225,7 +249,11 @@ def jc_damage(eps_f_tension: float) -> tuple:
 def read_th(path: Path) -> dict[str, np.ndarray]:
     rows = list(csv.reader(open(path)))
     head = [h.strip() for h in rows[0]]
-    data = np.array([[float(x) for x in r if x.strip()] for r in rows[1:] if r])
+    vals = [[float(x) for x in r if x.strip()] for r in rows[1:] if r]
+    if not vals:
+        return {}
+    n = max(set(map(len, vals)), key=[len(v) for v in vals].count)  # a killed run can leave a ragged last row
+    data = np.array([v for v in vals if len(v) == n])
     out = {}
     for i, h in enumerate(head[: data.shape[1]]):
         k = h if h not in out else f"{h}#{i}"
@@ -237,7 +265,9 @@ def postprocess(folder: Path, name: str, info: dict, weapon, omega_rad_s: float,
     th_csv = folder / f"{name}T01.csv"
     subprocess.run([str(radioss.WRAPPER), "th_to_csv", f"{name}T01"], cwd=folder, capture_output=True)
     th = read_th(th_csv)
-    time = th["time"]
+    time = th.get("time", np.zeros(0))
+    if len(time) < 2:
+        return {"error": "no time history (the run died before writing any)"}
     keys = list(th)
     # contact force magnitude: the interface's normal force components (name varies with the version)
     # the interface's variables in the order requested (FNX FNY FNZ FTX FTY FTZ), whatever their header says.
@@ -246,9 +276,10 @@ def postprocess(folder: Path, name: str, info: dict, weapon, omega_rad_s: float,
     if len(icols) >= 6:
         In = np.c_[[th[k] for k in icols[:3]]].T
         It = np.c_[[th[k] for k in icols[3:6]]].T
-        fn = np.linalg.norm(np.gradient(In, time, axis=0), axis=1)
-        ft = np.linalg.norm(np.gradient(It, time, axis=0), axis=1)
-        normal_impulse = float(np.linalg.norm(In[-1]))
+        fn = np.nan_to_num(np.linalg.norm(np.gradient(In, time, axis=0), axis=1))  # a killed run ends in NaN
+        ft = np.nan_to_num(np.linalg.norm(np.gradient(It, time, axis=0), axis=1))
+        good = np.isfinite(In).all(axis=1)
+        normal_impulse = float(np.linalg.norm(In[good][-1])) if good.any() else 0.0
     else:
         fn = ft = np.zeros_like(time)
         normal_impulse = 0.0
@@ -311,6 +342,8 @@ def _field_summary(vtk: Path, weapon, first: Path | None = None) -> dict:
     if first is not None and alive is not None:  # status 0 at t = 0 too (e.g. elements inside the rigid hub)
         d0 = _read_vtk(first)[2].get("EROSION_STATUS")
         dead0 = int(((d0 == 0) & w).sum()) if d0 is not None else 0
+    if not w.any():
+        return {}
     res = {"max_plastic_strain": float(eps[w].max()),
            "failed_elements": int(((alive == 0) & w).sum()) - dead0 if alive is not None else None,
            "plastic_strain_by_region": {k: float(eps[w & masks[k]].max()) if (w & masks[k]).any() else 0.0

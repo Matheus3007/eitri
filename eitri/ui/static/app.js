@@ -74,8 +74,46 @@ function renderOverview(r) {
         `<tr><td>${c.name}</td><td>${fmt(c.value, 4)}</td><td>${fmt(c.limit, 4)}</td><td class="${c.ok ? "good" : "bad"}">${c.ok ? "pass" : "FAIL"}</td><td class="muted">${esc(c.detail || "")}</td></tr>`).join("")}</table>`;
   }
   for (const img of r.images.filter((i) => !i.includes("compare_"))) html += `<div class="muted">${img.split("/").pop()}</div><img class="shot" src="/files/${img}">`;
+  if (r.files.some((f) => f.endsWith("/history.jsonl"))) html += `<h3>Search history <button id="histPlay">▶ replay</button></h3>
+    <canvas id="hist" width="900" height="380" style="width:100%;max-width:900px;background:#11161c;border:1px solid var(--line);border-radius:8px"></canvas>
+    <div class="muted">each dot is one evaluated design: x mass, y energy; filled = passes every check; color = phase (global search, Newton repair, CMA-ES refine)</div>`;
   if (r.summary) html += `<h3>Optimization summary</h3><pre class="log">${esc(JSON.stringify(r.summary, null, 1)).slice(0, 4000)}</pre>`;
   $("overview").innerHTML = html;
+  const hf = r.files.find((f) => f.endsWith("/history.jsonl"));
+  if (hf) drawHistory(hf);
+}
+
+async function drawHistory(file) {
+  const txt = await (await fetch(`/files/${file}`)).text();
+  const recs = txt.split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((h) => h.mass_kg && h.energy_j);
+  const cv = $("hist"), g = cv.getContext("2d");
+  if (!recs.length) return;
+  const xs = recs.map((h) => h.mass_kg * 1e3), ys = recs.map((h) => h.energy_j);
+  const pad = 44, W = cv.width, H = cv.height;
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const X = (v) => pad + (v - x0) / (x1 - x0 || 1) * (W - 2 * pad), Y = (v) => H - pad - (v - y0) / (y1 - y0 || 1) * (H - 2 * pad);
+  const colors = { global: "#6c8ebf", "repair": "#e8763a", "repair-fd": "#8a5a3a", refine: "#3fb27f", start: "#d9a441" };
+  const draw = (upto) => {
+    g.clearRect(0, 0, W, H);
+    g.strokeStyle = "#2a333e"; g.fillStyle = "#8b97a6"; g.font = "12px system-ui";
+    g.strokeRect(pad, pad, W - 2 * pad, H - 2 * pad);
+    g.fillText(`${x0.toFixed(0)} g`, pad, H - pad + 16); g.fillText(`${x1.toFixed(0)} g`, W - pad - 40, H - pad + 16);
+    g.fillText(`${y0.toFixed(0)} J`, 4, H - pad); g.fillText(`${y1.toFixed(0)} J`, 4, pad + 10);
+    let best = null;
+    for (let i = 0; i < upto; i++) {
+      const h = recs[i], c = colors[h.phase] || "#6c8ebf";
+      g.beginPath(); g.arc(X(xs[i]), Y(ys[i]), h.ok ? 4 : 3, 0, 2 * Math.PI);
+      if (h.ok) { g.fillStyle = c; g.fill(); if (!best || ys[i] > ys[best]) best = i; } else { g.strokeStyle = c; g.stroke(); }
+    }
+    if (best !== null) { g.strokeStyle = "#fff"; g.beginPath(); g.arc(X(xs[best]), Y(ys[best]), 8, 0, 2 * Math.PI); g.stroke(); }
+    g.fillStyle = "#d8dee6"; g.fillText(`${upto} / ${recs.length} designs`, W - pad - 120, pad - 10);
+  };
+  draw(recs.length);
+  $("histPlay").onclick = () => {
+    let k = 0;
+    const step = () => { k = Math.min(recs.length, k + Math.max(1, Math.round(recs.length / 150))); draw(k); if (k < recs.length) requestAnimationFrame(step); };
+    step();
+  };
 }
 
 function mdTables(md) {

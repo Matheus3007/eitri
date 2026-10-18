@@ -6,8 +6,8 @@ homogenized gyroid core (the infill), on both faces of a wall.
 
 Numbers and where they come from (units here MPa, mm, ms; converted to GPa on writing):
     solid TPU 95A    E ~ 26 MPa quasi-static (Ultimaker TPU 95A datasheet tensile modulus), density 1210 kg/m^3,
-                     elongation at break ~580 %. Ogden: mu1 = 8 MPa, alpha1 = 2 (neo-Hookean term, G0 ~ 8 MPa,
-                     E ~ 24 MPa) plus a small high-alpha term for the stiffening at large stretch; nu = 0.48.
+                     elongation at break ~580 %. Ogden: mu1 = 8.7 MPa, alpha1 = 2 (neo-Hookean, G0 = E/3);
+                     nu = 0.45 (0.49 is closer to reality but the law goes unstable in extreme compression).
     rate dependence  Prony series g1 = 2 G0 (tau 1 us), g2 = 1 G0 (tau 0.1 ms): at impact rates (1e3-1e4 /s)
                      the instantaneous modulus is ~4x the quasi-static one. Split-Hopkinson tests on TPUs of
                      this hardness report 2-5x: the right order, not a measurement of this filament.
@@ -44,6 +44,8 @@ class TPUWall:
     rate_factor: float = 4.0  # instantaneous / quasi-static modulus (Prony)
     core_plateau_mpa: float = 0.06
     core_C: float = 0.5  # E* = C E_s rho^2
+    tear: bool = True  # delete elements at the tearing strain
+    core_law: str = "foam"  # "foam" (homogenized gyroid, LAW70) or "skin" (solid TPU throughout; debugging)
 
     @property
     def thickness_mm(self) -> float:
@@ -51,14 +53,19 @@ class TPUWall:
 
     def write(self, deck, mid_skin: int, mid_core: int, fid0: int) -> None:
         G0 = self.E_s_mpa / 3.0  # MPa
-        mu1, a1, mu2, a2 = 0.99 * G0, 2.0, 0.01 * G0 * 2 / 8, 8.0  # sum mu a / 2 = G0
+        # one Ogden term with alpha = 2 (neo-Hookean): uniaxial engineering stress ~15 MPa at 100 % and ~34 MPa at
+        # 300 % (TPU 95A: ~10 and ~25). A stiffening high-alpha term overshot (354 MPa true at 300 %).
+        mu1, a1 = G0, 2.0
         g_extra = (self.rate_factor - 1.0) * G0
         # tearing: TPU 95A breaks near 580 % elongation (the tooth cuts it; torn elements are deleted -- and
         # without that, crushed elements distort until the time step collapses)
-        deck.fail_tensstrain(mid_skin, 4.5, 5.5)
-        deck.fail_tensstrain(mid_core, 4.5, 5.5)
-        deck.mat_ogden(mid_skin, "TPU 95A solid (printed perimeters)", self.rho_s * 1e-12 * 1e3, 0.48,
-                       [mu1 * 1e-3, mu2 * 1e-3], [a1, a2],
+        if self.tear:
+            deck.fail_tensstrain(mid_skin, 4.5, 5.5)
+            deck.fail_tensstrain(mid_core, 4.5, 5.5)
+        # nu 0.45, not 0.49: the near-incompressible law turns unstable past ~80 % compression (single-element
+        # test: stresses flip sign), which the tooth reaches under its edge
+        deck.mat_ogden(mid_skin, "TPU 95A solid (printed perimeters)", self.rho_s * 1e-12 * 1e3, 0.45,
+                       [mu1 * 1e-3], [a1],
                        prony_g=[2 / 3 * g_extra * 1e-3, 1 / 3 * g_extra * 1e-3], prony_tau=[1e-3, 0.1])
         rho = self.infill
         E_core = self.core_C * self.E_s_mpa * rho**2  # MPa
@@ -69,6 +76,10 @@ class TPUWall:
         curve = [(0.0, 0.0), (e_y, p), (0.55 * eD / 0.79, 1.2 * p), (0.9 * eD, 4 * p), (eD, 20 * p),
                  (min(eD + 0.06, 0.97), 0.25 * self.E_s_mpa), (0.98, 2.0 * self.E_s_mpa)]
         deck.funct(fid0, "gyroid core loading (MPa->GPa)", [(e, s * 1e-3) for e, s in curve])
+        if self.core_law == "skin":
+            deck.mat_ogden(mid_core, "TPU 95A solid (as core)", self.rho_s * 1e-12 * 1e3, 0.45, [mu1 * 1e-3], [a1],
+                           prony_g=[2 / 3 * g_extra * 1e-3, 1 / 3 * g_extra * 1e-3], prony_tau=[1e-3, 0.1])
+            return
         deck.mat_foam_tab(mid_core, f"TPU gyroid {rho:.0%} (homogenized)", self.rho_s * rho * 1e-12 * 1e3,
                           E_core * 1e-3, 0.05, self.E_s_mpa * 1e-3, 0.98,
                           load=[(fid0, 1e-3, 1.0), (fid0, 10.0, self.rate_factor * 0.75)])
