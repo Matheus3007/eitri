@@ -21,7 +21,10 @@ for (const t of document.querySelectorAll(".tab")) {
 function selectTab(name) {
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("sel", t.dataset.pane === name);
   for (const p of document.querySelectorAll(".pane")) p.classList.toggle("sel", p.id === name);
-  if (name === "viewer") viewer.resize();
+  if (name === "viewer") {
+    viewer.resize();
+    if (!viewer.m && state.run?.anims.length && !state.restoring) { $("animSel").value = "0"; $("animSel").onchange(); }
+  }
   if (name === "jobs") refreshJobs();
 }
 
@@ -39,6 +42,12 @@ async function loadProjects() {
 async function openProject(name) {
   state.project = name;
   state.run = null;
+  // nothing from the previous project may linger in any tab
+  $("overview").innerHTML = `<p class="muted">no run selected</p>`;
+  $("compare").innerHTML = "";
+  $("animSel").innerHTML = `<option value="">animation…</option>`;
+  viewer.clear();
+  setHash();
   for (const el of $("projects").children) el.classList.toggle("sel", el.dataset.name === name);
   const p = await api(`/api/project?name=${encodeURIComponent(name)}`);
   $("specText").value = p.spec;
@@ -65,6 +74,12 @@ async function openRun(path) {
   renderCompare(r);
   $("animSel").innerHTML = `<option value="">animation… (${r.anims.length})</option>` + r.anims.map((a, i) =>
     `<option value="${i}">${esc(a.label || a.source)}</option>`).join("");
+  viewer.clear(r.anims.length ? "pick an animation" : "this run has no simulations to animate");
+  // in the viewer, switching run (or project) shows the new run's first simulation right away
+  if (r.anims.length && $("viewer").classList.contains("sel") && !state.restoring) {
+    $("animSel").value = "0";
+    await $("animSel").onchange();
+  }
 }
 
 function renderOverview(r) {
@@ -254,6 +269,13 @@ const viewer = {
     const loop = () => { requestAnimationFrame(loop); this.tick(); this.renderer.render(this.scene, this.camera); };
     loop();
   },
+  clear(msg = "no animation loaded") {
+    if (this.obj) { this.scene.remove(this.obj); this.obj.geometry.dispose(); this.obj = null; }
+    this.m = null; this.playing = false; $("play").textContent = "▶";
+    $("time").max = 0; $("time").value = 0; $("tlabel").textContent = "–";
+    $("legend").style.display = "none";
+    $("status").textContent = msg;
+  },
   resize() {
     const w = this.wrap.clientWidth, h = this.wrap.clientHeight;
     if (!w || !h) return;
@@ -352,7 +374,7 @@ $("time").oninput = () => viewer.show(+$("time").value);
 $("field").onchange = $("scale").onchange = $("vmax").onchange = () => viewer.show(viewer.k);
 $("play").onclick = () => { viewer.playing = !viewer.playing; $("play").textContent = viewer.playing ? "❚❚" : "▶"; };
 $("animSel").onchange = async () => {
-  const a = state.run?.anims[+$("animSel").value];
+  const a = $("animSel").value === "" ? null : state.run?.anims[+$("animSel").value];
   if (!a) return;
   try {
     let dir = a.anim;
@@ -368,12 +390,16 @@ $("animSel").onchange = async () => {
 function setHash(extra = {}) {
   const h = new URLSearchParams(location.hash.slice(1));
   if (state.project) h.set("project", state.project);
-  if (state.run) h.set("run", state.run.path);
+  if (state.run) h.set("run", state.run.path); else h.delete("run");
+  if (h.get("run") !== state.hashRun) { h.delete("anim"); h.delete("frame"); }  // they belong to the old run
+  state.hashRun = h.get("run");
   for (const [k, v] of Object.entries(extra)) h.set(k, v);
   history.replaceState(null, "", "#" + h.toString());
 }
 async function fromHash() {
   const h = new URLSearchParams(location.hash.slice(1));
+  state.hashRun = h.get("run");
+  state.restoring = true;
   if (h.get("project")) await openProject(h.get("project"));
   if (h.get("run")) await openRun(h.get("run"));
   else if (state.runs?.length) await openRun(state.runs[0].path);  // the latest run
@@ -383,6 +409,7 @@ async function fromHash() {
     await $("animSel").onchange();
     if (h.get("frame")) { $("time").value = h.get("frame"); viewer.show(+h.get("frame")); }
   }
+  state.restoring = false;
 }
 for (const t of document.querySelectorAll(".tab")) t.addEventListener("click", () => setHash({ tab: t.dataset.pane }));
 

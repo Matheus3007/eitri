@@ -26,6 +26,7 @@ def main() -> None:
     ap.add_argument("--wait", type=float, default=4.0)
     ap.add_argument("--size", default="1500x950")
     ap.add_argument("--click", action="append", default=[], help="CSS selector to click before the shot")
+    ap.add_argument("--after", type=float, default=1.5, help="seconds to wait after each click")
     ap.add_argument("--scroll", default="", help="CSS selector to scroll into view before the shot")
     a = ap.parse_args()
     w, h = (int(v) for v in a.size.split("x"))
@@ -39,7 +40,7 @@ def main() -> None:
         page.wait_for_timeout(a.wait * 1000)
         for sel in a.click:
             page.click(sel)
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(a.after * 1000)
         if a.scroll:
             page.locator(a.scroll).scroll_into_view_if_needed()
             page.wait_for_timeout(500)

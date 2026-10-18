@@ -119,15 +119,19 @@ def project(name: str) -> dict:
 
 def _anim_sources(run: Path) -> list[dict]:
     out = []
-    for fea in sorted(run.glob("**/fea/*/impact.frd")):
-        out.append({"source": f"fea:{_rel(fea.parent)}", "label": f"static FEA ({fea.parent.name}) "
-                    f"{_rel(fea.parent).split('/runs/')[-1]}"})
+    for fea in sorted(run.glob("**/fea/**/impact.frd")):
+        if (_fea_anim_dir(fea.parent) / "manifest.json").exists():
+            continue  # already converted: listed below as ready
+        where = _rel(_fea_report_dir(fea.parent)).split("/runs/")[-1]
+        out.append({"source": f"fea:{_rel(fea.parent)}", "label": f"static FEA {where}"})
     for v in sorted(run.glob("**/vtk/*.pvd")):
         out.append({"source": f"explicit:{_rel(v.parent)}", "label": f"explicit hit {_rel(v.parent.parent).split('/runs/')[-1]}"})
     for t in sorted(run.glob("**/density_history.npz")):
         out.append({"source": f"topo:{_rel(t)}", "label": f"topology {t.parent.name}"})
     for a in sorted(run.glob("**/anim/*/manifest.json")):
-        out.append({"source": "ready", "anim": _rel(a.parent), "label": json.loads(a.read_text()).get("title")})
+        where = _rel(a.parent.parent.parent).split("/runs/")[-1]
+        out.append({"source": "ready", "anim": _rel(a.parent),
+                    "label": f"{json.loads(a.read_text()).get('title')} · {where}"})
     return out
 
 
@@ -181,16 +185,16 @@ def build_anim(rel: str, source: str) -> str:
     kind, _, arg = source.partition(":")
     if kind == "fea":
         fea_dir = _safe(arg)
-        out = fea_dir.parent.parent / "anim" / f"fea_{fea_dir.name}"
+        out = _fea_anim_dir(fea_dir)
         if not (out / "manifest.json").exists():
-            rep_dir = fea_dir.parent.parent
-            rep = json.loads((rep_dir / "report.json").read_text())
-            res = next(x for x in rep["results"] if x.get("material") == fea_dir.name)
+            rep = json.loads((_fea_report_dir(fea_dir) / "report.json").read_text())
+            # fea/<material>/ (eval) or fea/ directly (the evals inside a topology run: one material)
+            res = next((x for x in rep["results"] if x.get("material") == fea_dir.name), rep["results"][0])
             from eitri import materials
 
             s = res["stress"]
             anim.from_fea(fea_dir, out, s["yield_force_kn"], s["impact_at_estimated_peak"]["force_kn"],
-                          materials.get(fea_dir.name).yield_)
+                          materials.get(res["material"]).yield_)
     elif kind == "explicit":
         vdir = _safe(arg)
         out = vdir.parent / "anim" / "explicit"
@@ -204,6 +208,14 @@ def build_anim(rel: str, source: str) -> str:
     else:
         raise ValueError(source)
     return _rel(out)
+
+
+def _fea_report_dir(fea_dir: Path) -> Path:
+    return fea_dir.parent if fea_dir.name == "fea" else fea_dir.parent.parent
+
+
+def _fea_anim_dir(fea_dir: Path) -> Path:
+    return _fea_report_dir(fea_dir) / "anim" / ("fea" if fea_dir.name == "fea" else f"fea_{fea_dir.name}")
 
 
 def _explicit_dt(vdir: Path) -> float:
