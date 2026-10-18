@@ -30,7 +30,10 @@ async function loadProjects() {
   const ps = await api("/api/projects");
   $("projects").innerHTML = ps.map((p) => `<div class="item" data-name="${p.name}">${esc(p.title)}
       <small>${p.type || "?"} · ${p.n_runs} runs${p.reference ? " · vs " + esc(p.reference.split("/").slice(-2, -1)[0]) : ""}</small></div>`).join("");
-  for (const el of $("projects").children) el.onclick = () => openProject(el.dataset.name);
+  for (const el of $("projects").children) el.onclick = async () => {
+    await openProject(el.dataset.name);
+    if (state.runs?.length) await openRun(state.runs[0].path);
+  };
 }
 
 async function openProject(name) {
@@ -38,14 +41,17 @@ async function openProject(name) {
   state.run = null;
   for (const el of $("projects").children) el.classList.toggle("sel", el.dataset.name === name);
   const p = await api(`/api/project?name=${encodeURIComponent(name)}`);
-  $("spec").value = p.spec;
+  $("specText").value = p.spec;
   $("crumb").textContent = name;
   $("runs").innerHTML = p.runs.map((r) => {
-    const pill = r.ok === undefined ? "" : `<span class="pill ${r.ok ? "ok" : "bad"}">${r.ok ? "ok" : "fail"}</span>`;
-    const nums = r.energy_j ? `${fmt(r.energy_j)} J · ${fmt(r.mass_g)} g` : "";
-    return `<div class="item" data-path="${r.path}">${r.name.replace(/-[a-z]+$/, "")}${pill}<small>${r.kind}${nums ? " · " + nums : ""}</small></div>`;
+    const pill = r.ok === undefined || r.ok === null ? "" : `<span class="pill ${r.ok ? "ok" : "bad"}">${r.ok ? "ok" : "fail"}</span>`;
+    const nums = r.energy_j ? `${fmt(r.energy_j)} J · ${fmt(r.mass_g)} g` :
+      r.peak_kn !== undefined ? `peak ${fmt(r.peak_kn)} kN · ${fmt(r.impulse_ns)} N·s` : "";
+    const sub = [r.kind, nums].filter(Boolean).join(" · ");
+    return `<div class="item ${r.depth ? "child" : ""}" data-path="${r.path}">${esc(r.depth ? r.name : r.name.replace(/-[a-z]+$/, ""))}${pill}${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
   }).join("") || `<div class="item muted">no runs yet</div>`;
   for (const el of $("runs").children) if (el.dataset.path) el.onclick = () => openRun(el.dataset.path);
+  state.runs = p.runs;
 }
 
 async function openRun(path) {
@@ -66,18 +72,34 @@ function renderOverview(r) {
   const cards = [["energy", h.energy_j, "J"], ["mass", h.mass_g, "g"], ["MOI", h.moi_gm2, "g·m²"],
     ["imbalance", h.imbalance_gmm, "g·mm"], ["spin SF", h.sf_spin, ""], ["impact SF", h.sf_impact, ""],
     ["first yield", h.yield_force_kn, "kN"]];
-  let html = `<div class="cards">${cards.map(([k, v, u]) => `<div class="card"><div class="k">${k}</div><div class="v">${fmt(v)} <small class="muted">${u}</small></div></div>`).join("")}</div>`;
+  let html = r.headline ? `<div class="cards">${cards.map(([k, v, u]) => `<div class="card"><div class="k">${k}</div><div class="v">${fmt(v)} <small class="muted">${u}</small></div></div>`).join("")}</div>` : "";
+  if (r.topo) {
+    html += `<h3>Topology designs</h3><table><tr><th>MOI target</th><th>energy</th><th>mass</th><th>imbalance</th><th>verdict</th><th>worse than the reference</th></tr>${r.topo.map((d) =>
+      `<tr><td class="num">×${fmt(d.moi_frac)}</td><td class="num">${fmt(d.energy_j)} J</td><td class="num">${fmt((d.mass_kg || 0) * 1e3)} g</td><td class="num">${fmt(d.imbalance_gmm)} g·mm</td>
+       <td class="${d.ok ? "good" : "bad"}">${d.ok ? "pass" : "fail"}</td><td class="muted">${esc(worseSummary(d))}</td></tr>`).join("")}</table>`;
+  }
   if (h.error) html += `<p class="bad">${esc(h.error)}</p>`;
   if (r.checks?.length) {
     html += `<h3>Checks ${h.ok ? '<span class="pill ok">all pass</span>' : '<span class="pill bad">' + (h.failed || []).length + " fail</span>"}</h3>
       <table><tr><th>check</th><th>value</th><th>limit</th><th></th><th>detail</th></tr>${r.checks.map((c) =>
         `<tr><td>${c.name}</td><td>${fmt(c.value, 4)}</td><td>${fmt(c.limit, 4)}</td><td class="${c.ok ? "good" : "bad"}">${c.ok ? "pass" : "FAIL"}</td><td class="muted">${esc(c.detail || "")}</td></tr>`).join("")}</table>`;
   }
-  for (const img of r.images.filter((i) => !i.includes("compare_"))) html += `<div class="muted">${img.split("/").pop()}</div><img class="shot" src="/files/${img}">`;
+  const imgs = r.images.filter((i) => !i.includes("compare_"));
+  if (imgs.length) html += `<div class="grid">${imgs.map((img) => `<figure><figcaption class="muted">${esc(img.split("/").slice(-3).join("/"))}</figcaption><img class="shot" src="/files/${img}"></figure>`).join("")}</div>`;
   if (r.files.some((f) => f.endsWith("/history.jsonl"))) html += `<h3>Search history <button id="histPlay">▶ replay</button></h3>
     <canvas id="hist" width="900" height="380" style="width:100%;max-width:900px;background:#11161c;border:1px solid var(--line);border-radius:8px"></canvas>
     <div class="muted">each dot is one evaluated design: x mass, y energy; filled = passes every check; color = phase (global search, Newton repair, CMA-ES refine)</div>`;
-  if (r.summary) html += `<h3>Optimization summary</h3><pre class="log">${esc(JSON.stringify(r.summary, null, 1)).slice(0, 4000)}</pre>`;
+  if (r.summary) {
+    const S = r.summary;
+    html += `<h3>Optimization summary</h3><div class="cards">
+      <div class="card"><div class="k">designs evaluated</div><div class="v">${S.n_trials}</div></div>
+      <div class="card"><div class="k">pass every check</div><div class="v ${S.n_feasible ? "good" : "bad"}">${S.n_feasible}</div></div>
+      <div class="card"><div class="k">${S.n_feasible ? "winner" : "closest (none passed)"}</div><div class="v">#${S.best_trial} <small class="muted">${esc(S.best_phase || "")}</small></div></div></div>
+      ${S.fine_mesh_checks?.length ? `<table><tr><th>fine-mesh check</th><th>objective</th><th>verdict</th><th>failed</th></tr>${S.fine_mesh_checks.map((c) =>
+        `<tr><td>trial ${c.trial}</td><td class="num">${fmt(c.objective, 4)}</td><td class="${c.ok ? "good" : "bad"}">${c.ok ? "pass" : "fail"}</td><td class="muted">${esc((c.failed || []).join(", "))}</td></tr>`).join("")}</table>` : ""}
+      ${S.impact_gate && Object.keys(S.impact_gate).length ? `<h3>Explicit-hit gate</h3><table><tr><th>trial</th><th>hit</th><th>verdict</th><th>worse than the reference</th></tr>${Object.entries(S.impact_gate).flatMap(([tr, g]) =>
+        Object.entries(g.cases || {}).map(([c, v]) => `<tr><td>${tr}</td><td>${c}</td><td class="${v.worse?.length ? "bad" : "good"}">${v.error ? "error" : v.worse?.length ? "worse" : "ok"}</td><td class="muted">${esc((v.worse || []).join("; "))}</td></tr>`)).join("")}</table>` : ""}`;
+  }
   $("overview").innerHTML = html;
   const hf = r.files.find((f) => f.endsWith("/history.jsonl"));
   if (hf) drawHistory(hf);
@@ -90,7 +112,10 @@ async function drawHistory(file) {
   if (!recs.length) return;
   const xs = recs.map((h) => h.mass_kg * 1e3), ys = recs.map((h) => h.energy_j);
   const pad = 44, W = cv.width, H = cv.height;
-  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const T = state.run?.targets || {};
+  const mb = T.mass_max_g, re = T.ref_energy_j;
+  const x0 = Math.min(...xs, mb || Infinity) - 1, x1 = Math.max(...xs, mb || -Infinity) + 1;
+  const y0 = Math.min(...ys, re || Infinity) - 2, y1 = Math.max(...ys, re || -Infinity) + 2;
   const X = (v) => pad + (v - x0) / (x1 - x0 || 1) * (W - 2 * pad), Y = (v) => H - pad - (v - y0) / (y1 - y0 || 1) * (H - 2 * pad);
   const colors = { global: "#6c8ebf", "repair": "#e8763a", "repair-fd": "#8a5a3a", refine: "#3fb27f", start: "#d9a441" };
   const draw = (upto) => {
@@ -99,6 +124,14 @@ async function drawHistory(file) {
     g.strokeRect(pad, pad, W - 2 * pad, H - 2 * pad);
     g.fillText(`${x0.toFixed(0)} g`, pad, H - pad + 16); g.fillText(`${x1.toFixed(0)} g`, W - pad - 40, H - pad + 16);
     g.fillText(`${y0.toFixed(0)} J`, 4, H - pad); g.fillText(`${y1.toFixed(0)} J`, 4, pad + 10);
+    g.setLineDash([5, 4]); g.strokeStyle = "#8b97a6";
+    if (mb) { g.beginPath(); g.moveTo(X(mb), pad); g.lineTo(X(mb), H - pad); g.stroke(); g.fillText(`budget ${mb.toFixed(0)} g`, X(mb) + 4, pad + 12); }
+    if (re) { g.beginPath(); g.moveTo(pad, Y(re)); g.lineTo(W - pad, Y(re)); g.stroke(); g.fillText(`reference ${re.toFixed(0)} J`, W - pad - 120, Y(re) - 4); }
+    g.setLineDash([]);
+    let lx = pad;
+    for (const [name, c] of Object.entries({ global: colors.global, "Newton repair": colors.repair, "repair step (FD)": colors["repair-fd"], "CMA-ES": colors.refine })) {
+      g.fillStyle = c; g.beginPath(); g.arc(lx + 5, H - 12, 4, 0, 2 * Math.PI); g.fill(); g.fillStyle = "#8b97a6"; g.fillText(name, lx + 13, H - 8); lx += g.measureText(name).width + 34;
+    }
     let best = null;
     for (let i = 0; i < upto; i++) {
       const h = recs[i], c = colors[h.phase] || "#6c8ebf";
@@ -114,6 +147,17 @@ async function drawHistory(file) {
     const step = () => { k = Math.min(recs.length, k + Math.max(1, Math.round(recs.length / 150))); draw(k); if (k < recs.length) requestAnimationFrame(step); };
     step();
   };
+}
+
+function worseSummary(d) {
+  // "case: item" entries -> "case (item, item)", one per load case
+  const by = new Map();
+  for (const w of d.worse_than_reference || d.failed || []) {
+    const [g, item] = w.includes(": ") ? w.split(": ") : [w, ""];
+    if (!by.has(g)) by.set(g, []);
+    if (item) by.get(g).push(item.replace(/ \[kN\]$/, ""));
+  }
+  return [...by].map(([g, items]) => items.length ? `${g} (${items.join(", ")})` : g).join("; ");
 }
 
 function mdTables(md) {
@@ -148,7 +192,7 @@ function renderCompare(r) {
 // ---------- spec & jobs ----------
 $("save").onclick = async () => {
   if (!state.project) return;
-  const r = await fetch(`/api/spec?name=${encodeURIComponent(state.project)}`, { method: "PUT", body: $("spec").value }).then((x) => x.json());
+  const r = await fetch(`/api/spec?name=${encodeURIComponent(state.project)}`, { method: "PUT", body: $("specText").value }).then((x) => x.json());
   $("specMsg").innerHTML = r.ok ? `<span class="good">saved</span>` : `<span class="bad">${esc(r.error)}</span>`;
 };
 for (const b of document.querySelectorAll("button[data-cmd]")) {
@@ -271,7 +315,13 @@ const viewer = {
     const lo = f.name === "of yield" ? 0 : Math.max(0, f.min);
     let hi = parseFloat($("vmax").value);
     if (!(hi > lo)) hi = f.name === "of yield" ? 1.0 : (f.name === "plastic strain" ? Math.min(f.max, 0.15) : f.max);
-    for (let i = 0; i < n; i++) cmap((this.frames[foff + i] - lo) / (hi - lo || 1), this.col, i * 3);
+    // plastic strain: material that hasn't yielded is plain steel grey, so only the yielded zones carry color
+    const elastic = f.name === "plastic strain" ? 0.002 : -Infinity;
+    for (let i = 0; i < n; i++) {
+      const v = this.frames[foff + i];
+      if (v < elastic) { this.col[i * 3] = 0.62; this.col[i * 3 + 1] = 0.65; this.col[i * 3 + 2] = 0.69; continue; }
+      cmap((v - lo) / (hi - lo || 1), this.col, i * 3);
+    }
     if (this.vis) {
       const v = this.vis.subarray(k * m.n_tris, (k + 1) * m.n_tris);
       const idx = [];
@@ -285,7 +335,7 @@ const viewer = {
     const grad = COLORMAP.map(([t, c]) => `rgb(${c.map((x) => Math.round(x * 255)).join(",")}) ${t * 100}%`).join(",");
     $("legend").style.display = "block";
     $("legend").innerHTML = `<div>${f.name} ${f.unit !== "-" ? "[" + f.unit + "]" : ""}</div><div class="bar" style="background:linear-gradient(90deg,${grad})"></div>
-      <div class="ends"><span>${fmt(lo)}</span><span>${fmt(hi)}</span></div><div class="muted">cyan: above max</div>`;
+      <div class="ends"><span>${fmt(lo)}</span><span>${fmt(hi)}</span></div><div class="muted">cyan: above max${f.name === "plastic strain" ? " · grey: not yielded" : ""}</div>`;
   },
   tick() {
     if (!this.playing || !this.m) return;
@@ -326,6 +376,7 @@ async function fromHash() {
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.get("project")) await openProject(h.get("project"));
   if (h.get("run")) await openRun(h.get("run"));
+  else if (state.runs?.length) await openRun(state.runs[0].path);  // the latest run
   if (h.get("tab")) selectTab(h.get("tab"));
   if (h.get("anim") !== null && h.get("anim") !== "") {
     $("animSel").value = h.get("anim");

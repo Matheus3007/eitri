@@ -200,8 +200,11 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   `#project=..&run=..&tab=viewer&anim=N&frame=K`. The user runs IDM (Internet Download Manager): it hooks Chrome,
   grabs anything that looks like a download (".bin" URLs, octet-stream), pops a window on their PC and hands
   fetch() an empty 204. So arrays go through /api/data?dir=&part= as text/plain; never serve app data as a
-  download type, and never drive the user's Windows Chrome (it's their desktop) -- check the page with a
-  browser inside WSL instead. Never `pkill -f` the server (it matches your own shell).
+  download type, and never drive the user's Windows Chrome (it's their desktop). Check pages with
+  `./eitri.sh python tools/ui_shot.py out.png "project=..&run=..&tab=viewer&anim=0&frame=30" [--scroll SEL]`:
+  Playwright's headless Chromium inside WSL (dev dependency; its system libs nss/nspr/gbm/asound unpacked without
+  sudo via `apt-get download` + `dpkg -x` into ~/opt/chromium-libs/root). Restart the server after editing
+  eitri/ui/*.py (it imports them once); static files reload on their own. Never `pkill -f` the server (it matches your own shell).
 - Center of percussion is intentionally not an objective: a balanced rotor's axle always reacts the full
   impulse. Imbalance is a hard constraint; we report impulse / peak force / inward force fraction.
 

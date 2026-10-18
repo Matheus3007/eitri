@@ -24,7 +24,10 @@ viewer = ["ocp_vscode>=2.6"]
 eitri = "eitri.cli:app"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "playwright>=1.64.0",
+    "pytest>=8",
+]
 
 [build-system]
 requires = ["hatchling"]

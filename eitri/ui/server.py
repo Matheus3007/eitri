@@ -68,21 +68,52 @@ def _headline(report: dict) -> dict:
             "sf_impact": s.get("impact_safety_factor"), "yield_force_kn": s.get("yield_force_kn")}
 
 
+def _run_entry(r: Path, depth: int = 0, label: str | None = None) -> dict:
+    info = {"path": _rel(r), "name": label or r.name, "kind": r.name.split("-")[-1] if depth == 0 else "",
+            "depth": depth}
+    for rep in (r / "report.json", r / "best" / "report.json"):
+        if rep.exists():
+            try:
+                info |= _headline(json.loads(rep.read_text()))
+            except Exception:
+                pass
+            break
+    m = r / "metrics.json"
+    if m.exists():  # an explicit hit
+        try:
+            d = json.loads(m.read_text())
+            info |= {"kind": "explicit hit", "peak_kn": d.get("peak_force_kn"), "impulse_ns": d.get("impulse_ns")}
+        except Exception:
+            pass
+    return info
+
+
+def _children(r: Path) -> list[dict]:
+    """Runs inside a run: topology designs (moi*/runs/*-eval, moi*/impact) and explicit-hit cases."""
+    out = []
+    for sub in sorted(p for p in r.iterdir() if p.is_dir()):
+        if sub.name in ("fea", "vtk", "anim", "best"):
+            continue
+        if (sub / "metrics.json").exists() or (sub / "vtk").exists():
+            out.append(_run_entry(sub, 1, sub.name.replace("_", " ")))
+        if (sub / "eval" / "report.json").exists():  # a topology design evaluated by the sweep
+            out.append(_run_entry(sub / "eval", 1, f"{sub.name} · eval"))
+        for ev in sorted((sub / "runs").glob("*")) if (sub / "runs").exists() else []:
+            if ev.is_dir():
+                out.append(_run_entry(ev, 1, f"{sub.name} · {ev.name.split('-')[-1]} {ev.name[9:13]}"))
+        for case in sorted((sub / "impact").glob("*/*")) if (sub / "impact").exists() else []:
+            if case.is_dir() and (case / "metrics.json").exists():
+                out.append(_run_entry(case, 1, f"{sub.name} · explicit {case.name}"))
+    return out
+
+
 def project(name: str) -> dict:
     d = PROJECTS / name
     runs = []
     for r in sorted((d / "runs").glob("*"), reverse=True) if (d / "runs").exists() else []:
-        if not r.is_dir():
-            continue
-        info = {"path": _rel(r), "name": r.name, "kind": r.name.split("-")[-1]}
-        for rep in (r / "report.json", r / "best" / "report.json"):
-            if rep.exists():
-                try:
-                    info |= _headline(json.loads(rep.read_text()))
-                except Exception:
-                    pass
-                break
-        runs.append(info)
+        if r.is_dir():
+            runs.append(_run_entry(r))
+            runs += _children(r)
     return {"name": name, "spec": (d / "spec.toml").read_text(), "runs": runs}
 
 
@@ -118,6 +149,25 @@ def run_info(rel: str) -> dict:
             info["checks"] = res.get("checks", [])
             info["design"] = res.get("design")
             break
+    # the targets the history chart draws: the mass budget and the reference's energy
+    try:
+        spec_path = next(pp for pp in [r, *r.parents] if (pp / "spec.toml").exists()) / "spec.toml"
+        t = tomllib.loads(spec_path.read_text())
+        info["targets"] = {"mass_max_g": ((t.get("constraints") or {}).get("mass_kg") or {}).get("max")}
+        if info["targets"]["mass_max_g"]:
+            info["targets"]["mass_max_g"] *= 1e3
+        ref = (t.get("reference") or {}).get("spec")
+        if ref:
+            from eitri.reference import reference_metrics
+
+            cache = (ROOT / ref).parent / ".eitri_reference.json"
+            if cache.exists():
+                vals = list(json.loads(cache.read_text()).values())
+                if vals:
+                    info["targets"]["ref_energy_j"] = vals[-1].get("energy_j")
+                    info["targets"]["ref_mass_g"] = (vals[-1].get("mass_kg") or 0) * 1e3 or None
+    except Exception:
+        pass
     for summ in ("summary.json", "topo.json", "impact.json"):
         if (r / summ).exists():
             info[summ.split(".")[0]] = json.loads((r / summ).read_text())

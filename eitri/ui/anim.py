@@ -130,6 +130,13 @@ def from_explicit(vtk_dir: Path, out: Path, dt_ms: float, title: str = "explicit
         raise FileNotFoundError(f"no VTK frames in {vtk_dir}")
     f0 = read_vtk(frames_vtk[0])
     tris, owner = _surface(f0["cells"])
+    # outward winding: each triangle's normal points away from its own cell's centre (mixed windings make the
+    # averaged vertex normals cancel and the surface renders blotchy)
+    P = f0["points"]
+    cc = np.array([P[c].mean(axis=0) for c in f0["cells"]])[owner]
+    a, b, c = P[tris[:, 0]], P[tris[:, 1]], P[tris[:, 2]]
+    inward = np.einsum("ij,ij->i", np.cross(b - a, c - a), (a + b + c) / 3 - cc) < 0
+    tris[inward] = tris[inward][:, [0, 2, 1]]
     used = np.unique(tris)
     remap = -np.ones(len(f0["points"]), np.int64)
     remap[used] = np.arange(len(used))
