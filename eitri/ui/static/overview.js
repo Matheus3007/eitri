@@ -35,18 +35,19 @@ const GROUPS = [
 const checkName = (n) => CHECK_NAMES[n] || n.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 
 function delta(v, ref, dir) {
-  if (typeof v !== "number" || typeof ref !== "number" || !ref) return "";
+  if (typeof v !== "number" || typeof ref !== "number" || !ref) return `<div class="dbar"></div><div class="dtxt">no reference</div>`;
   const d = (v - ref) / Math.abs(ref) * 100;
-  if (Math.abs(d) < 0.05) return `<div class="delta">= reference</div>`;
-  const cls = dir === 0 ? "" : (d > 0) === (dir > 0) ? "better" : "worse";
-  return `<div class="delta ${cls}">${d > 0 ? "▲" : "▼"} ${fmt(Math.abs(d), 2)} % vs ref</div>`;
+  const cls = Math.abs(d) < 0.05 || dir === 0 ? "" : (d > 0) === (dir > 0) ? "better" : "worse";
+  const w = Math.min(50, Math.abs(d) / 30 * 50);  // the half-bar spans +-30 %
+  return `<div class="dbar"><span class="f ${cls}" style="left:${d >= 0 ? 50 : 50 - w}%;width:${Math.max(w, 0.6)}%"></span><span class="mid"></span></div>
+    <div class="dtxt ${cls}">${Math.abs(d) < 0.05 ? "= reference" : `${d > 0 ? "+" : "−"}${fmt(Math.abs(d), 2)} % vs ref`}</div>`;
 }
 
 export function kpis(values, ref, list = METRICS, max = 8) {
   const rows = list.filter(([k]) => typeof values?.[k] === "number").slice(0, max);
   if (!rows.length) return "";
-  return `<div class="kpis">${rows.map(([k, label, unit, dir, lead]) => `<div class="kpi ${lead ? "lead" : ""}">
-    <div class="eyebrow">${label}</div><div class="val">${fmt(values[k], 4)}<small>${unit}</small></div>${ref ? delta(values[k], ref[k], dir) : ""}</div>`).join("")}</div>`;
+  return `<div class="kpis">${rows.map(([k, label, unit, dir]) => `<div class="kpi">
+    <div class="k">${label}</div><div class="val"><span data-k="${k}" data-v="${values[k]}">${fmt(values[k], 4)}</span><small>${unit}</small></div>${delta(values[k], ref?.[k], dir)}</div>`).join("")}</div>`;
 }
 
 function marginBar(c) {
@@ -64,19 +65,15 @@ export function checksCard(checks) {
   for (const c of checks) groups[GROUPS.findIndex(([, f]) => f(c.name))][1].push(c);
   const nFail = checks.filter((c) => !c.ok).length;
   return `<div class="card"><div class="card-h"><h3>Checks</h3><div class="right">
-      <span class="tag ${nFail ? "bad" : "ok"}">${nFail ? `${nFail} failing` : "all pass"}</span><span class="muted mono" style="font-size:11px">${checks.length} total</span></div></div>
+      <span class="tag ${nFail ? "bad" : "ok"}">${nFail ? `${nFail} failing` : "all pass"}</span><span class="muted mono" style="font-size:11px">${checks.length}</span></div></div>
     <div class="checks">${groups.filter(([, cs]) => cs.length).map(([g, cs]) => {
       const f = cs.filter((c) => !c.ok).length;
       return `<div class="grp ${f ? "" : "closed"}">${icon("chev", "chev")}<span class="eyebrow">${g}</span>
+        <span class="pips">${cs.map((c) => `<i class="${c.ok ? "" : "f"}"></i>`).join("")}</span>
         <span class="count">${f ? `<span class="bad">${f} fail</span> · ` : ""}${cs.length}</span></div>
-        <div class="rows">${cs.map((c) => `<div class="check ${c.ok ? "" : "fail"}"><span class="dot"></span><span class="name">${esc(checkName(c.name))}</span>
-          ${marginBar(c)}<span class="detail" title="${esc(c.detail || "")}">${esc(c.detail || "")}</span></div>`).join("")}</div>`;
+        <div class="rows"><div>${cs.map((c) => `<div class="check ${c.ok ? "" : "fail"}"><span class="dot"></span><span class="name">${esc(checkName(c.name))}</span>
+          ${marginBar(c)}<span class="detail" title="${esc(c.detail || "")}">${esc(c.detail || "")}</span></div>`).join("")}</div></div>`;
     }).join("")}</div></div>`;
-}
-
-function verdict(ok, title, detail) {
-  return `<div class="verdict ${ok ? "ok" : "bad"}"><div class="badge">${icon(ok ? "check" : "x")}</div>
-    <div><div class="v">${title}</div><div class="d">${detail}</div></div></div>`;
 }
 
 const KIND = { eval: "Evaluation", optimize: "Optimization", refine: "Local refinement", topo: "Topology optimization",
@@ -121,38 +118,72 @@ export function mdTables(md) {
 
 function simIcon(a) { const t = `${a.source} ${a.label}`.toLowerCase(); return /explicit|reference hit/.test(t) ? "impact" : /topolog/.test(t) ? "topo" : "sim"; }
 
-export function simsCard(r) {
+export function simsStrip(r, one = false) {
   if (!r.anims?.length) return "";
-  return `<div class="card"><div class="card-h"><h3>Simulations</h3><div class="right"><span class="muted mono" style="font-size:11px">${r.anims.length}</span></div></div>
-    <div class="simlist">${r.anims.map((a, i) => `<div class="sim" data-sim="${i}"><div class="k">${icon(simIcon(a))}</div>
-      <div style="min-width:0"><div class="t">${esc(splitLabel(a.label || a.source)[0])}</div><div class="s">${esc(splitLabel(a.label)[1])}${a.source === "ready" ? "" : " · converts on first open"}</div></div>
-      <span class="go">${icon("next")}</span></div>`).join("")}</div></div>`;
+  return `<div class="sims ${one ? "one" : ""}">${r.anims.map((a, i) => `<div class="sim" data-sim="${i}"><div class="k">${icon(simIcon(a))}</div>
+    <div style="min-width:0"><div class="t">${esc(splitLabel(a.label || a.source)[0])}</div><div class="s">${esc(splitLabel(a.label)[1])}${a.source === "ready" ? "" : " · converts on first open"}</div></div>
+    <span class="go">${icon("next")}</span></div>`).join("")}</div>`;
 }
 
-function gallery(r) {
-  const imgs = r.images;
-  if (!imgs.length) return "";
-  return `<div class="section-title"><h2>Reports</h2><span class="muted">${imgs.length} figures</span></div>
-    <div class="gallery">${imgs.map((img) => {
-      const parts = img.split("/"), name = parts[parts.length - 1].replace(/\.png$/, "").replace(/_/g, " ");
-      const where = parts.slice(0, -1).join("/").split("/runs/").pop();
-      return `<div class="shot" data-img="${esc(img)}"><div class="im" style="background-image:url('/files/${esc(img)}')"></div>
-        <div class="cap"><span>${esc(name)}</span><span>${esc(where.length > 26 ? "…" + where.slice(-26) : where)}</span></div></div>`;
-    }).join("")}</div>`;
+// figures grouped by what they show; line drawings are inked onto the dark sheet, color maps stay on paper
+const FIG_CATS = [
+  ["Comparison", /compare_/, "ink"], ["Geometry", /profile_|faces|outline/, "ink"], ["Stress", /stress_/, "paper"],
+  ["Drive", /spinup_/, "ink"], ["Topology", /density|pocket|topo/, "paper"], ["Search", /pareto|history/, "ink"], ["Other", /./, "paper"],
+];
+function figures(r) {
+  const groups = FIG_CATS.map(([name, , look]) => ({ name, look, items: [] }));
+  for (const img of r.images) groups[FIG_CATS.findIndex(([, re]) => re.test(img.split("/").pop()))].items.push(img);
+  return groups.filter((g) => g.items.length);
+}
+const figName = (p) => p.split("/").pop().replace(/\.png$/, "").replace(/_/g, " ");
+const figWhere = (p) => p.split("/").slice(0, -1).join("/").split("/runs/").pop();
+function plates(r) {
+  const gs = figures(r);
+  if (!gs.length) return "";
+  return `<div class="plates" data-plates><div class="cats">${gs.map((g, i) => `<div class="cat ${i ? "" : "sel"}" data-cat="${i}"><span class="nm">${g.name}</span><span class="n">${g.items.length}</span></div>`).join("")}</div>
+    <div class="view"><div class="sheet"><img alt=""></div><div class="caption"><span class="t"></span><span class="w"></span></div><div class="strip"></div></div></div>`;
+}
+function wirePlates(el, r) {
+  const root = el.querySelector("[data-plates]");
+  if (!root) return;
+  const gs = figures(r), img = root.querySelector(".sheet img"), strip = root.querySelector(".strip");
+  let cat = 0, fig = 0;
+  const show = (c, f) => {
+    cat = c; fig = f;
+    const g = gs[c], src = g.items[f];
+    for (const x of root.querySelectorAll(".cat")) x.classList.toggle("sel", +x.dataset.cat === c);
+    img.classList.add("swap");
+    setTimeout(() => {
+      img.onload = () => img.classList.remove("swap");
+      img.src = `/files/${src}`; img.className = `${g.look} swap`;
+      if (img.complete) img.classList.remove("swap");
+    }, 120);
+    img.onclick = () => lightbox(`/files/${src}`);
+    root.querySelector(".caption .t").textContent = figName(src);
+    root.querySelector(".caption .w").textContent = figWhere(src);
+    strip.style.display = g.items.length > 1 ? "" : "none";
+    strip.innerHTML = g.items.map((p, i) => `<div class="th ${i === f ? "sel" : ""}" data-f="${i}" title="${esc(figName(p))}" style="background-image:url('/files/${esc(p)}')"></div>`).join("");
+    for (const t of strip.querySelectorAll(".th")) t.onclick = () => show(cat, +t.dataset.f);
+  };
+  for (const c of root.querySelectorAll(".cat")) c.onclick = () => show(+c.dataset.cat, 0);
+  show(0, 0);
 }
 
 function files(r) {
+  // deliverables first (STEP, reports, specs); solver decks and logs behind a toggle
   const fs = r.files.filter((f) => !f.endsWith(".png"));
   if (!fs.length) return "";
-  return `<div class="section-title"><h2>Files</h2><span class="muted">${fs.length}</span></div>
-    <div class="files">${fs.map((f) => `<a class="file" href="/files/${esc(f)}" target="_blank" title="${esc(f)}">${icon(f.endsWith(".step") ? "part" : "file")}<span>${esc(f.split("/runs/").pop())}</span></a>`).join("")}</div>`;
+  const key = (f) => /\.(step|md|toml)$|report\.json$|summary\.json$|metrics\.json$|impact\.json$|topo\.json$/.test(f);
+  const main = fs.filter(key), rest = fs.filter((f) => !key(f));
+  const row = (f) => `<a class="file" href="/files/${esc(f)}" target="_blank" title="${esc(f)}">${icon(f.endsWith(".step") ? "part" : "file")}<span>${esc(f.split("/runs/").pop())}</span></a>`;
+  return `<div class="files">${main.map(row).join("")}</div>${rest.length ? `<details class="more"><summary>${rest.length} solver files (decks, logs, time histories)</summary>
+    <div class="files">${rest.map(row).join("")}</div></details>` : ""}`;
 }
 
 function topoSection(r) {
   const designs = r.topo;
   const children = r._children || [];
-  return `<div class="section-title"><h2>Designs</h2><span class="muted">one per MOI target · click to open its evaluation</span></div>
-    <div class="card"><div class="card-b flush"><table class="data"><tr><th>MOI target</th><th class="num">Energy</th><th class="num">Mass</th><th class="num">Imbalance</th><th>Verdict</th><th>Worse than the reference</th></tr>
+  return `<div class="card"><div class="card-b flush"><table class="data"><tr><th>MOI target</th><th class="num">Energy</th><th class="num">Mass</th><th class="num">Imbalance</th><th>Verdict</th><th>Worse than the reference</th></tr>
     ${designs.map((d) => {
       const tag = `moi${String(d.moi_frac.toFixed(3)).replace(".", "p")}`;
       const ch = children.find((c) => c.path.includes(`/${tag}/`) && c.path.includes("/runs/")) || children.find((c) => c.path.includes(`/${tag}/`));
@@ -164,10 +195,9 @@ function topoSection(r) {
 
 function optimizeSection(r) {
   const S = r.summary;
-  let html = `<div class="section-title"><h2>Search</h2><span class="muted">global TPE → Newton repair → CMA-ES refine</span></div>
-    <div class="kpis" style="margin-top:0"><div class="kpi lead"><div class="eyebrow">Designs evaluated</div><div class="val">${fmt(S.n_trials)}</div></div>
-      <div class="kpi"><div class="eyebrow">Pass every check</div><div class="val ${S.n_feasible ? "ok" : "bad"}">${fmt(S.n_feasible)}</div></div>
-      <div class="kpi"><div class="eyebrow">${S.n_feasible ? "Winner" : "Closest (none passed)"}</div><div class="val">#${S.best_trial}<small>${esc(S.best_phase || "")}</small></div></div></div>`;
+  let html = `<div class="kpis" style="margin-bottom:20px"><div class="kpi"><div class="k">Designs evaluated</div><div class="val">${fmt(S.n_trials)}</div></div>
+      <div class="kpi"><div class="k">Pass every check</div><div class="val ${S.n_feasible ? "ok" : "bad"}">${fmt(S.n_feasible)}</div></div>
+      <div class="kpi"><div class="k">${S.n_feasible ? "Winner" : "Closest (none passed)"}</div><div class="val">#${S.best_trial}<small>${esc(S.best_phase || "")}</small></div></div></div>`;
   if (r.files.some((f) => f.endsWith("/history.jsonl"))) html += `<div class="card"><div class="card-h"><h3>Design space</h3><div class="right">
       <span class="muted" style="font-size:11.5px">each dot one design · filled = passes · ring = winner</span><button class="btn" id="histPlay">${icon("play")} Replay</button></div></div>
       <div class="card-b"><canvas class="chart" id="hist" height="380"></canvas></div></div>`;
@@ -186,8 +216,8 @@ function impactSection(r) {
     const d = by.design || {}, ref = by.reference;
     const rows = HIT_METRICS.filter(([k]) => typeof d[k] === "number");
     const regs = Object.keys(d.plastic_strain_by_region || {});
-    return `<div class="section-title"><h2>${esc(c)} hit</h2><span class="muted">${ref ? "design vs reference, same setup" : "design only"}</span></div>
-      ${kpis(d, ref, HIT_METRICS, 6)}
+    return `<div class="eyebrow" style="margin:18px 0 8px">${esc(c)} hit · ${ref ? "design vs reference, same setup" : "design only"}</div>
+      ${kpis(d, ref, HIT_METRICS, 6)}<div style="height:14px"></div>
       ${regs.length ? `<div class="card"><div class="card-h"><h3>Peak plastic strain by region</h3><div class="right"><span class="muted" style="font-size:11.5px">tip = contact denting, excluded from the gate</span></div></div>
         <div class="card-b flush"><table class="data"><tr><th>Region</th><th class="num">Design</th>${ref ? `<th class="num">Reference</th><th class="num">Δ</th>` : ""}</tr>
         ${regs.map((g) => { const a = d.plastic_strain_by_region[g], b = ref?.plastic_strain_by_region?.[g];
@@ -197,49 +227,77 @@ function impactSection(r) {
   }).join("");
 }
 
+function titleblock(r, verdict) {
+  const kind = r._entry?.kind || r.name.split("-").pop();
+  const name = r._entry?.depth ? r._entry.name : kindLabel(kind);
+  const m = /(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/.exec(r.path.split("/runs/").pop());
+  const w = m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : "";
+  const mat = r.headline?.material || "–";
+  return `<header class="titleblock"><div><div class="k">${esc(r.project)} · ${esc(kindLabel(kind))}</div><div class="name" title="${esc(name)}">${esc(name)}</div></div>
+    <div><div class="k">Run</div><div class="v" title="${esc(r.path)}">${esc(r.path.split("/runs/").pop().split("/")[0].replace(/-[a-z]+$/, ""))}</div></div>
+    <div><div class="k">Date</div><div class="v">${esc(w || "–")}</div></div>
+    <div><div class="k">Material</div><div class="v">${esc(mat)}</div></div>
+    <div><div class="k">Reference</div><div class="v">${esc(r.reference?.name || "–")}</div></div>
+    ${verdict ? `<div class="verdict ${verdict.ok ? "ok" : "bad"}"><div><div class="k">Verdict</div><div class="big">${verdict.title}</div></div><div class="why">${verdict.detail}</div></div>` : `<div><div class="k">Verdict</div><div class="v">–</div></div>`}</header>`;
+}
+
 export function render(r, ctx) {
   const H = r.headline || {}, ref = r.reference?.headline;
-  const kind = r._entry?.kind || r.name.split("-").pop();
-  let hero = "", body = "";
-  const title = r._entry?.depth ? r._entry.name : kindLabel(kind);
+  const secs = [];  // [title, note, html]
+  let verdict = null;
   if (r.headline && !H.error) {
     const failed = H.failed || [];
-    hero = verdict(H.ok, H.ok ? "PASS" : "FAIL", H.ok ? `every check passes${r.reference ? ` · holds against ${esc(r.reference.name)}` : ""}`
-      : `${failed.length} failing: ${esc(failed.map(checkName).join(", "))}`);
-    body += kpis(H, ref);
-    body += `<div class="grid2"><div>${r.checks?.length ? checksCard(r.checks) : ""}</div><div>
-      ${r.steps?.length ? `<div class="card"><div class="card-h"><h3>Part</h3><div class="right"><button class="btn ghost" data-go="part">${icon("part")} Open</button></div></div>
-        <div class="thumb"><div class="stage-host" id="thumbHost"></div><div class="cap"><span class="eyebrow">${esc(r.steps[0].path.split("/").pop())}</span></div></div></div>` : ""}
-      ${simsCard(r)}</div></div>`;
+    verdict = { ok: H.ok, title: H.ok ? "PASS" : "FAIL", detail: H.ok ? `every check${r.reference ? `<br>holds against ${esc(r.reference.name)}` : ""}` : esc(failed.map(checkName).join(", ")) };
+    secs.push(["Performance", r.reference ? `bars: difference to ${esc(r.reference.name)}, ±30 % full scale` : "", kpis(H, ref)]);
+    secs.push(["Integrity", "every check with its margin; the part as exported", `<div class="grid2"><div>${r.checks?.length ? checksCard(r.checks) : ""}</div><div>
+      ${r.steps?.length ? `<div class="card"><div class="card-h"><h3>Part</h3><div class="right"><button class="btn ghost" data-go="part">${icon("part")} Inspect</button></div></div>
+        <div class="thumb"><div class="stage-host" id="thumbHost"></div><div class="cap"><span class="eyebrow">${esc(r.steps[0].path.split("/").pop())}</span></div></div></div>` : ""}</div></div>`]);
   } else if (H.error) {
-    hero = verdict(false, "ERROR", esc(H.error));
+    verdict = { ok: false, title: "ERROR", detail: esc(H.error) };
   }
   if (r.topo) {
     const n = r.topo.filter((d) => d.ok).length;
-    hero = verdict(n > 0, `${n} / ${r.topo.length} PASS`, n ? "designs that hold everywhere the reference holds" : "no design holds everywhere the reference does");
-    body += topoSection(r);
-    if (r.anims?.length) body += `<div class="section-title"><h2>Simulations</h2><span class="muted">every design's FEA and explicit hits</span></div>${simsCard(r).replace('<div class="card"><div class="card-h"><h3>Simulations</h3>', '<div class="card" style="display:none"><div class="card-h"><h3>Simulations</h3>').replace('style="display:none"', "")}`;
+    verdict = { ok: n > 0, title: `${n}/${r.topo.length}`, detail: n ? "designs hold everywhere the reference holds" : "no design holds everywhere the reference does" };
+    secs.push(["Designs", "one per MOI target · open a row for its evaluation", topoSection(r)]);
   }
-  if (r.summary) body += optimizeSection(r);
-  if (r.impact) body += impactSection(r);
+  if (r.summary) secs.push(["Search", "global TPE → Newton repair → CMA-ES refine", optimizeSection(r)]);
+  if (r.impact) secs.push(["Explicit hits", "", impactSection(r)]);
   if (r.metrics) {
     const M = r.metrics;
-    hero = verdict(!(M.failed_elements > 0), M.failed_elements ? `${M.failed_elements} ELEMENTS FAILED` : "INTACT", `peak ${fmt(M.peak_force_kn, 3)} kN · impulse ${fmt(M.impulse_ns, 3)} N·s · pulse ${fmt(M.pulse_ms, 3)} ms`);
-    body += kpis(M, null, HIT_METRICS.concat([["pulse_ms", "Pulse", "ms", 0], ["added_mass_pct", "Added mass", "%", -1]]), 8);
-    body += `<div class="grid2"><div>${M.plastic_strain_by_region ? `<div class="card"><div class="card-h"><h3>Peak plastic strain by region</h3></div><div class="card-b flush"><table class="data">
+    verdict = { ok: !(M.failed_elements > 0), title: M.failed_elements ? "TORN" : "INTACT", detail: `peak ${fmt(M.peak_force_kn, 3)} kN · ${fmt(M.impulse_ns, 3)} N·s · ${fmt(M.pulse_ms, 3)} ms pulse` };
+    secs.push(["Hit", "", kpis(M, null, HIT_METRICS.concat([["pulse_ms", "Pulse", "ms", 0], ["added_mass_pct", "Added mass", "%", -1]]), 8)]);
+    if (M.plastic_strain_by_region) secs.push(["Regions", "peak plastic strain and failed elements", `<div class="card"><div class="card-b flush"><table class="data">
       <tr><th>Region</th><th class="num">Plastic strain</th><th class="num">Failed elements</th></tr>${Object.entries(M.plastic_strain_by_region).map(([g, v]) =>
-        `<tr><td>${esc(g)}</td><td class="num">${fmt(v, 4)}</td><td class="num">${fmt(M.failed_by_region?.[g] ?? 0)}</td></tr>`).join("")}</table></div></div>` : ""}</div><div>${simsCard(r)}</div></div>`;
+        `<tr><td>${esc(g)}</td><td class="num">${fmt(v, 4)}</td><td class="num">${fmt(M.failed_by_region?.[g] ?? 0)}</td></tr>`).join("")}</table></div></div>`]);
   }
-  if (!r.headline && !r.topo && !r.metrics && !r.impact && r.anims?.length) body += `<div class="grid2"><div></div><div>${simsCard(r)}</div></div>`;
-  body += gallery(r) + files(r);
-  return `<div class="page"><div class="hero"><div><div class="eyebrow">${esc(r.project)} · ${esc(kindLabel(kind))}</div><h1>${esc(title)}</h1>
-    <div class="when">${esc(when(r.name) || r.path.split("/runs/").pop())}${r.reference ? ` · reference <span style="color:var(--text-2)">${esc(r.reference.name)}</span>` : ""}</div></div>${hero}</div>${body}</div>`;
+  if (r.anims?.length) secs.push(["Simulations", `${r.anims.length} · open one to play it`, simsStrip(r)]);
+  if (r.images?.length) secs.push(["Figures", `${r.images.length} · grouped by what they show`, plates(r)]);
+  const fl = files(r);
+  if (fl) secs.push(["Files", "", fl]);
+  return `<div class="page">${titleblock(r, verdict)}${secs.map(([t, note, html], i) => `<section class="sec"><div class="sec-h"><span class="no">${String(i + 1).padStart(2, "0")}</span><h2>${t}</h2><span class="rule"></span>${note ? `<span class="note">${note}</span>` : ""}</div>${html}</section>`).join("")}</div>`;
+}
+
+const lastVals = new Map();
+function countUp(el) {
+  for (const sp of el.querySelectorAll("[data-v]")) {
+    const k = sp.dataset.k, to = +sp.dataset.v, from = lastVals.get(k);
+    lastVals.set(k, to);
+    if (from === undefined || from === to || !Number.isFinite(from)) continue;
+    const t0 = performance.now(), ms = 520;
+    const step = (now) => {
+      const u = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - u, 3);
+      sp.textContent = fmt(from + (to - from) * e, 4);
+      if (u < 1) requestAnimationFrame(step); else sp.textContent = fmt(to, 4);
+    };
+    requestAnimationFrame(step);
+  }
 }
 
 export function wire(el, r, ctx) {
+  countUp(el);
+  wirePlates(el, r);
   for (const g of el.querySelectorAll(".checks .grp")) g.onclick = () => g.classList.toggle("closed");
   for (const s of el.querySelectorAll("[data-sim]")) s.onclick = () => ctx.openSim(+s.dataset.sim);
-  for (const s of el.querySelectorAll("[data-img]")) s.onclick = () => lightbox(`/files/${s.dataset.img}`);
   for (const t of el.querySelectorAll("tr[data-open]")) if (t.dataset.open) t.onclick = () => ctx.openRun(t.dataset.open);
   for (const b of el.querySelectorAll("[data-go]")) b.onclick = () => ctx.selectTab(b.dataset.go);
   const hf = r.files.find((f) => f.endsWith("/history.jsonl"));

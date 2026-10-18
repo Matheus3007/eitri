@@ -202,7 +202,13 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   part preview, simulations, run-type sections, figures, files), Compare (two panes, each any run x any view --
   part / simulation / figure -- linked camera and time; A-vs-B table + B's compare.md), Simulation, Part (STEP
   tessellated server-side by ui/part.py: faces unshared for sharp creases, B-rep edges, face ids for hover info,
-  section cut; cached in <run>/anim/part_<stem>), Spec (TOML highlighting), Jobs.
+  section cut; cached in <run>/anim/part_<stem>), Spec (TOML highlighting), Jobs. Visual language: engineering
+  drawing x race telemetry -- Barlow / Barlow Condensed / JetBrains Mono, a drawing title block per run, numbered
+  sections, KPI delta bars vs the reference, a run-log timeline in the sidebar, figures grouped into categories
+  (line plots inked onto the dark sheet with a CSS invert, color maps kept on paper), direction-aware tab slides.
+  3D navigation is SolidWorks-like (static/controls.js, not OrbitControls, which felt inverted to the user):
+  drag rotates the part with the cursor (screen-space trackball), right/Ctrl drag pans, the wheel zooms about the
+  cursor with SolidWorks' direction (forward = out), F / double-click fit, Ctrl+1/3/5/7 views, all animated.
   Hot reload: `eitri ui` runs ui/dev.py, which restarts the server child when any eitri/**/*.py changes; the page
   holds /api/events (SSE): a new boot id reloads the page (state is in the hash), CSS changes swap in place, JS/HTML
   changes reload, and new/changed runs under projects/ (directory-mtime scan every 3 s) refresh the sidebar and

@@ -2,7 +2,7 @@
 // (title, colorbar, probe, view tools) and the dock (transport, readouts, field/colormap/deform/range/fps).
 // Used by the Simulation tab, the Part tab and both Compare panes.
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { CadControls } from "./controls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { $, h, esc, fmt, api, icon, Select, Combo } from "./ui.js";
 
@@ -50,8 +50,8 @@ export class Stage {
     const pm = new THREE.PMREMGenerator(this.renderer);
     this.env = pm.fromScene(new RoomEnvironment(), 0.04).texture;
     this.camera = new THREE.PerspectiveCamera(30, 1, 0.1, 10000);
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.enableDamping = true; this.controls.dampingFactor = 0.12;
+    this.controls = new CadControls(this.camera, this.renderer.domElement, {
+      pick: (ndc) => this.pickNdc(ndc), onFit: () => this.fit(this.view, true), onView: (v) => this.fit(v, true) });
     this.scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x1a1410, 0.9));
     const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(2, -3, 4); this.scene.add(key);
     const rim = new THREE.DirectionalLight(0xff8a50, 0.6); rim.position.set(-3, 2, -1); this.scene.add(rim);
@@ -63,7 +63,7 @@ export class Stage {
       requestAnimationFrame(loop);
       this.onTick?.();
       this.controls.update();
-      if (this.autoRotate && this.root) this.root.rotation.z += 0.0025;
+      if (this.autoRotate && this.root && !this.controls.mode) this.root.rotation.z += 0.0025;
       this.renderer.render(this.scene, this.camera);
     };
     loop();
@@ -82,9 +82,15 @@ export class Stage {
     }
     this.scene.environment = null;
   }
-  dispose() { this.alive = false; this.ro.disconnect(); this.clear(); this.renderer.dispose(); this.renderer.forceContextLoss(); this.renderer.domElement.remove(); }
+  dispose() { this.alive = false; this.ro.disconnect(); this.controls.dispose(); this.clear(); this.renderer.dispose(); this.renderer.forceContextLoss(); this.renderer.domElement.remove(); }
   setRoot(obj, fitTarget = null) { this.clear(); this.root = obj; this.fitTarget = fitTarget; this.scene.add(obj); }
-  fit(view = this.view || "iso") {
+  pickNdc(ndc) {
+    if (!this.pickables?.length) return null;
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.camera);
+    return rc.intersectObjects(this.pickables, false)[0]?.point || null;
+  }
+  fit(view = this.view || "iso", animate = false) {
     this.view = view;
     if (!this.root) return;
     const box = new THREE.Box3().setFromObject(this.fitTarget || this.root);  // the part, not its floor grid
@@ -93,11 +99,16 @@ export class Stage {
     const d = r / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2)) * 1.06 * (this.fitScale || 1);
     const dirs = { iso: [0.55, -0.95, 0.75], top: [0, 0, 1], front: [0, -1, 0.0001], side: [1, 0, 0.0001] };
     const v = new THREE.Vector3(...dirs[view]).normalize();
-    this.camera.up.set(0, view === "top" ? 1 : 0, view === "top" ? 0 : 1);
-    this.camera.position.copy(c).addScaledVector(v, d);
+    const up = new THREE.Vector3(0, view === "top" ? 1 : 0, view === "top" ? 0 : 1);
+    const pos = c.clone().addScaledVector(v, d);
     this.camera.near = r / 100; this.camera.far = r * 100; this.camera.updateProjectionMatrix();
+    if (animate) { this.controls.animateTo(pos, c, up); return; }
+    this.controls.anim = null;
+    this.camera.up.copy(up);
+    this.camera.position.copy(pos);
     this.controls.target.copy(c);
-    this.controls.update();
+    this.camera.lookAt(c);
+    this.camera.updateMatrixWorld();
   }
   pick(ev, objs) {
     const r = this.renderer.domElement.getBoundingClientRect();
@@ -270,8 +281,8 @@ export class SimView {
     this.hud.tr.innerHTML = ""; this.hud.bl.innerHTML = "";
   }
   toolbar() {
-    const tools = [["iso", "Isometric", () => this.stage.fit("iso")], ["top", "Top", () => this.stage.fit("top")],
-      ["front", "Front", () => this.stage.fit("front")], ["fit", "Fit", () => this.stage.fit()],
+    const tools = [["iso", "Isometric (Ctrl+7)", () => this.stage.fit("iso", true)], ["top", "Top (Ctrl+5)", () => this.stage.fit("top", true)],
+      ["front", "Front (Ctrl+1)", () => this.stage.fit("front", true)], ["fit", "Fit (F, double-click)", () => this.stage.fit(this.stage.view, true)],
       ["edges", "Mesh / edges", () => this.toggleWire()], ["section", "Section cut", () => this.toggleSection()]];
     this.hud.rc.innerHTML = tools.map(([ic, t], i) => `<button class="toolbtn" data-i="${i}" title="${t}">${icon(ic)}</button>`).join("");
     for (const b of this.hud.rc.querySelectorAll("button")) b.onclick = () => { tools[+b.dataset.i][2](); this.syncTools(); };
@@ -309,6 +320,7 @@ export class SimView {
       this.wireObj = new THREE.LineSegments(new THREE.WireframeGeometry(g), new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22 }));
       this.wireObj.visible = this.wire; root.add(this.wireObj);
       this.stage.setRoot(root);
+      this.stage.pickables = [this.mesh];
       this.stage.scene.environment = this.flat ? null : this.stage.env;
       this.section = null;
       if (!keepView) this.stage.fit(this.flat ? "top" : "iso");
@@ -517,6 +529,7 @@ export class SimView {
       grid.material.transparent = true; grid.material.opacity = 0.5; grid.material.depthWrite = false;
       root.add(grid);
       this.stage.setRoot(root, this.mesh);
+      this.stage.pickables = [this.mesh];
       this.stage.scene.environment = this.stage.env;
       this.section = null;
       this.stage.fit("iso");

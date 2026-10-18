@@ -23,10 +23,26 @@ function writeHash(extra = {}) {
 // ---------- tabs ----------
 $("tabs").innerHTML = TABS.map(([id, label, ic]) => `<div class="tab" data-tab="${id}">${icon(ic)}<span>${label}</span></div>`).join("");
 for (const t of $("tabs").children) t.onclick = () => selectTab(t.dataset.tab);
+function moveInk() {
+  const t = $("tabs").querySelector(".tab.sel"), ink = $("tabInk");
+  if (!t) return;
+  const r = t.getBoundingClientRect(), pr = $("tabInk").parentElement.getBoundingClientRect();
+  ink.style.left = `${r.left - pr.left + 10}px`; ink.style.width = `${r.width - 20}px`;
+}
+window.addEventListener("resize", moveInk);
+document.fonts?.ready.then(moveInk);
 function selectTab(tab) {
+  const order = TABS.map(([t]) => t), from = order.indexOf(state.tab), to = order.indexOf(tab);
+  const changed = state.tab !== tab || !document.querySelector(".pane.sel");
   state.tab = tab;
   for (const t of $("tabs").children) t.classList.toggle("sel", t.dataset.tab === tab);
   for (const p of document.querySelectorAll(".pane")) p.classList.toggle("sel", p.id === tab);
+  moveInk();
+  if (changed && from >= 0) {  // slide in from the side the tab lies on
+    const dir = to > from ? 1 : -1;
+    $(tab).animate([{ opacity: 0, transform: `translateX(${dir * 36}px)` }, { opacity: 1, transform: "none" }],
+      { duration: 380, easing: "cubic-bezier(.2,.8,.2,1)" });
+  }
   writeHash();
   if (tab === "simulation") showSimulation();
   if (tab === "part") showPart();
@@ -51,7 +67,6 @@ function runLabel(r) {
 }
 function runSub(r) {
   const bits = [];
-  if (!r.depth) bits.push(when(r.name).split(" · ")[1] || "");
   if (r.energy_j) bits.push(`${fmt(r.energy_j)} J`, `${fmt(r.mass_g)} g`);
   if (r.peak_kn !== undefined && r.peak_kn !== null) bits.push(`${fmt(r.peak_kn)} kN`, `${fmt(r.impulse_ns)} N·s`);
   return bits.filter(Boolean).join(" · ");
@@ -65,8 +80,8 @@ async function openProject(name, { openLatest = false, keepRun = false } = {}) {
   state.runs = p.runs; state.spec = p.spec;
   const meta = state.projects.find((x) => x.name === name) || {};
   $("sideHead").innerHTML = `<div class="eyebrow">Project</div><div class="title">${esc(meta.title || name)}</div>
-    <div class="meta"><span class="tag accent">${esc(meta.type || "?")}</span>${meta.reference ? `<span class="tag">vs ${esc(meta.reference.split("/").slice(-2, -1)[0])}</span>` : ""}
-    <span class="tag">${p.runs.filter((r) => !r.depth).length} runs</span></div>`;
+    <div class="meta"><span>type <b>${esc(meta.type || "?")}</b></span>${meta.reference ? `<span>ref <b>${esc(meta.reference.split("/").slice(-2, -1)[0])}</b></span>` : ""}
+    <span><b>${p.runs.filter((r) => !r.depth).length}</b> runs</span></div>`;
   renderRuns();
   if (changed) { state.runCache.clear(); disposeCompare(); }
   if (keepRun && state.run) return;
@@ -77,16 +92,21 @@ async function openProject(name, { openLatest = false, keepRun = false } = {}) {
 }
 
 function renderRuns() {
+  // a run log: day headers, a spine with one node per run (filled = verdict), children branching off it
   let html = "", day = null;
-  for (const r of state.runs) {
-    if (!r.depth) {
-      const d = when(r.name).split(" · ")[0];
-      if (d && d !== day) { day = d; html += `<div class="run-day eyebrow">${esc(d)}</div>`; }
-    }
-    const L = runLabel(r), pill = r.ok === true ? `<span class="chip ok">PASS</span>` : r.ok === false ? `<span class="chip bad">FAIL</span>` : "";
-    html += `<div class="run ${r.depth ? "child" : ""} ${state.run?.path === r.path ? "sel" : ""}" data-path="${esc(r.path)}">
-      <span class="ico">${icon(L.icon)}</span><span class="nm">${esc(L.name)}</span>${pill || "<span></span>"}<span class="st">${esc(runSub(r))}</span></div>`;
-  }
+  const rows = state.runs.map((r) => ({ r, day: r.depth ? null : when(r.name).split(" · ")[0] }));
+  let curDay = null;
+  for (const x of rows) { if (x.day !== null) curDay = x.day; x.d = curDay; }
+  rows.forEach((x, i) => {
+    const r = x.r;
+    if (!r.depth && x.d && x.d !== day) { day = x.d; html += `<div class="log-day"><span class="eyebrow">${esc(day)}</span><span class="rule"></span></div>`; }
+    const first = i === 0 || rows[i - 1].d !== x.d, last = i === rows.length - 1 || rows[i + 1].d !== x.d;
+    const L = runLabel(r), v = r.ok === true ? "ok" : r.ok === false ? "bad" : "";
+    html += `<div class="run ${r.depth ? "child" : ""} ${first ? "first" : ""} ${last ? "last" : ""} ${state.run?.path === r.path ? "sel" : ""}" data-path="${esc(r.path)}">
+      <span class="time">${r.depth ? "" : esc(when(r.name).split(" · ")[1] || "")}</span><span class="node ${v} ${r.depth ? "" : "fill"}"></span>
+      <span class="what"><div class="nm">${esc(L.name)}</div><div class="st">${esc(runSub(r))}</div></span>
+      <span class="mark ${v}">${v === "ok" ? "PASS" : v === "bad" ? "FAIL" : ""}</span></div>`;
+  });
   $("runs").innerHTML = html || `<div class="empty" style="padding:30px 10px">no runs yet</div>`;
   for (const el of $("runs").querySelectorAll(".run")) el.onclick = () => openRun(el.dataset.path);
 }
@@ -123,12 +143,16 @@ function refreshActive() {
 // ---------- overview ----------
 let thumb = null;
 const ctx = { openSim: (i) => { state.sim = i; simLoaded = null; selectTab("simulation"); }, openRun: (p) => openRun(p), selectTab };
+let shownRun = null;
 function renderOverview() {
   const r = state.run;
   const el = $("overview");
-  const top = el.scrollTop;
+  const fresh = shownRun !== r.path;
+  shownRun = r.path;
+  const top = fresh ? 0 : el.scrollTop;
   thumb?.dispose(); thumb = null;
   el.innerHTML = overview.render(r, ctx);
+  el.classList.toggle("enter", fresh);
   overview.wire(el, r, ctx);
   el.scrollTop = top;
   const host = el.querySelector("#thumbHost");
@@ -285,7 +309,8 @@ async function setCompareView(side, v) {
       other.view.stage.camera.position.copy(S.view.stage.camera.position);
       other.view.stage.camera.up.copy(S.view.stage.camera.up);
       other.view.stage.controls.target.copy(S.view.stage.controls.target);
-      other.view.stage.controls.update();
+      other.view.stage.camera.quaternion.copy(S.view.stage.camera.quaternion);
+      other.view.stage.camera.updateMatrixWorld();
       other.syncing = false;
     });
   }
@@ -318,9 +343,9 @@ function renderCompareTables() {
 function showSpec() {
   const el = $("spec");
   if (!el.dataset.ready) {
-    el.innerHTML = `<div class="page"><div class="hero" style="border:0;padding-bottom:12px"><div><div class="eyebrow">Specification</div><h1 id="specTitle"></h1>
-      <div class="when">units: mm · deg · kg · rpm · m/s · ms — [design] values: a number (fixed) or [min, max] (free)</div></div></div>
-      <div class="toolbar"><button class="btn primary" id="specSave">Save</button><button class="btn" id="specRevert">Revert</button><span class="msg" id="specMsg"></span></div>
+    el.innerHTML = `<div class="page"><div class="doc-h"><div><div class="eyebrow">Specification</div><h1 id="specTitle"></h1>
+      <div class="when">units mm · deg · kg · rpm · m/s · ms — [design] values: a number (fixed) or [min, max] (free) · Ctrl+S saves</div></div>
+      <div class="toolbar"><span class="msg" id="specMsg"></span><button class="btn" id="specRevert">Revert</button><button class="btn primary" id="specSave">Save</button></div></div>
       <div class="editor"><div class="gutter" id="specGutter"></div><div class="code"><pre id="specHl" aria-hidden="true"></pre><textarea id="specText" spellcheck="false"></textarea></div></div></div>`;
     el.dataset.ready = "1";
     const ta = $("specText"), gut = $("specGutter"), hl = $("specHl");
@@ -426,7 +451,7 @@ async function renderJobs(js) {
     const l = await api(`/api/job?id=${state.jobSel}`);
     const el2 = $("jobLog"), atEnd = el2.scrollTop + el2.clientHeight >= el2.scrollHeight - 30;
     el2.textContent = l.log || "(no output yet)";
-    $("jobWhich").textContent = `job ${state.jobSel}`;
+    const jj = js.find((x) => x.id === state.jobSel); $("jobWhich").textContent = jj ? `#${jj.id} · ${jj.cmd} ${jj.args.join(" ")}` : "–";
     if (atEnd) el2.scrollTop = el2.scrollHeight;
   }
 }

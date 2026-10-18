@@ -175,7 +175,7 @@ export class Combo {
 export function toast(html, ms = 4200) {
   const t = h(`<div class="toast glass">${icon("live")}<div>${html}</div></div>`);
   $("toasts").appendChild(t);
-  setTimeout(() => t.remove(), ms);
+  setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 320); }, ms);
 }
 
 export function lightbox(src) {
