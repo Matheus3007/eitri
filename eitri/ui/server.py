@@ -258,9 +258,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(project(q["name"]))
             if path == "/api/run":
                 return self._json(run_info(q["path"]))
-            if path == "/api/data":  # animation arrays: Chrome swallows fetches of URLs ending in .bin (a 204
-                f = _safe(q["path"])  # that never reaches the server), so they don't go through /files/
-                return self._send(f.read_bytes(), "application/x-eitri-array")
+            if path == "/api/data":
+                # Animation arrays. Never let them look like a download (no ".bin" in the URL, no octet-stream):
+                # download managers (IDM) hook the browser, grab such requests, pop up and hand fetch() an
+                # empty 204. A text type is never captured; fetch().arrayBuffer() reads the bytes all the same.
+                f = _safe(q["dir"]) / {"mesh": "mesh.bin", "frames": "frames.bin", "vis": "vis.bin"}[q["part"]]
+                return self._send(f.read_bytes(), "text/plain; charset=x-user-defined")
             if path == "/api/jobs":
                 return self._json(jobs())
             if path == "/api/job":
@@ -270,9 +273,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not f.is_file():
                     return self._json({"error": "not found"}, 404)
                 ctype = {".png": "image/png", ".json": "application/json", ".md": "text/markdown",
-                         ".toml": "text/plain", ".step": "application/step",
-                         # not octet-stream: Chrome treats that as a download and fetch() can get an empty 204
-                         ".bin": "application/x-eitri-array"}.get(f.suffix, "application/octet-stream")
+                         ".toml": "text/plain", ".step": "application/step"}.get(f.suffix, "application/octet-stream")
                 return self._send(f.read_bytes(), ctype)
             return self._json({"error": "not found"}, 404)
         except PermissionError:

@@ -181,10 +181,11 @@ const viewer = {
   async load(dir) {
     $("status").textContent = "loading…";
     const m = await api(`/files/${dir}/manifest.json`);
-    const data = async (f) => (await fetch(`/api/data?path=${encodeURIComponent(dir + "/" + f)}`)).arrayBuffer();
-    const mesh = await data("mesh.bin");
-    const frames = await data("frames.bin");
-    const vis = m.has_vis ? new Uint8Array(await data("vis.bin")) : null;
+    // no ".bin" in URLs and a text content type: download managers must not grab these (see server.py)
+    const data = async (part) => (await fetch(`/api/data?dir=${encodeURIComponent(dir)}&part=${part}`)).arrayBuffer();
+    const mesh = await data("mesh");
+    const frames = await data("frames");
+    const vis = m.has_vis ? new Uint8Array(await data("vis")) : null;
     const n = m.n_nodes, nt = m.n_tris;
     this.m = m;
     this.base = new Float32Array(mesh, 0, n * 3);

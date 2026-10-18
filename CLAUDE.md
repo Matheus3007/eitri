@@ -190,10 +190,11 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   Every simulation becomes the same animation bundle (ui/anim.py: manifest.json, mesh.bin, frames.bin,
   vis.bin), built on first view and cached in the run: static FEA (hit force ramped to first yield on the
   spinning stress), explicit hits (VTK series, eroded cells hidden), topology (density_history.npz). Deep links
-  `#project=..&run=..&tab=viewer&anim=N&frame=K`. Chrome swallows fetch() of URLs ending in ".bin" (a 204 that
-  never reaches the server), so arrays go through /api/data?path=. Screenshots for checking the page: Windows
-  Chrome headless (`chrome.exe --headless=new --use-angle=swiftshader --enable-unsafe-swiftshader
-  --virtual-time-budget=15000 --screenshot=...`). Never `pkill -f` the server (it matches your own shell).
+  `#project=..&run=..&tab=viewer&anim=N&frame=K`. The user runs IDM (Internet Download Manager): it hooks Chrome,
+  grabs anything that looks like a download (".bin" URLs, octet-stream), pops a window on their PC and hands
+  fetch() an empty 204. So arrays go through /api/data?dir=&part= as text/plain; never serve app data as a
+  download type, and never drive the user's Windows Chrome (it's their desktop) -- check the page with a
+  browser inside WSL instead. Never `pkill -f` the server (it matches your own shell).
 - Center of percussion is intentionally not an objective: a balanced rotor's axle always reacts the full
   impulse. Imbalance is a hard constraint; we report impulse / peak force / inward force fraction.
 
