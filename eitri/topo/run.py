@@ -99,6 +99,9 @@ def run(spec: Spec, spec_path: Path, out: Path, log: Callable[[str], None] = pri
         density_png(res, d / "density.png", f"{spec.name} {tag}: {t.objective}, mass {mass * 1e3:.1f} g")
         np.savez_compressed(d / "density.npz", nodes=res.mesh.nodes, tris=res.mesh.tris, density=res.density,
                             keep=res.keep)
+        np.savez_compressed(d / "density_history.npz", nodes=res.mesh.nodes, tris=res.mesh.tris,
+                            iterations=np.array([i for i, _ in res.snapshots]),
+                            density_history=np.array([x for _, x in res.snapshots]))
         cs = extract.void_contours(res.mesh.nodes, res.mesh.tris, res.nodal_density(), outline)
         extract.save(d / "pockets.json", cs, {"moi_frac": frac, "objective": t.objective,
                                               "constraint_error": res.constraint_error})

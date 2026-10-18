@@ -35,6 +35,7 @@ Always go through the wrapper, which sets `UV_PROJECT_ENVIRONMENT`:
 ./eitri.sh eitri topo projects/<name>/spec.toml [--no-eval]   # needs [topology]; one design per MOI target
 ./eitri.sh eitri faces projects/<name>/spec.toml               # numbered boundary edges + keep regions
 ./eitri.sh eitri impact projects/<name>/spec.toml [--case bite|tip3|all] [--no-ref]   # explicit 3D hit
+./eitri.sh eitri ui [--port 8765]   # local web app: runs, comparisons, animated simulations, spec editor, jobs
 ./eitri.sh eitri check projects/<name>/spec.toml
 ./eitri.sh eitri materials
 ./eitri.sh eitri show projects/<name>/spec.toml   # OCP CAD Viewer panel in VS Code (needs `--extra viewer`)
@@ -175,6 +176,24 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   ~90 kN peak (equivalent half-sine 0.19 ms -- the static 0.67 ms calibration is a stand-in, softer armor
   lengthens it), the weapon loses ~290 J; Rebot's peak hub plastic strain sits at the static model's first-yield
   spot (hub neck, ~(8, 30) mm): both models agree on where it gives.
+- Explicit-hit gate: `optimize`/`refine`/`topo --impact-gate N` (default 1) run both explicit hits (bite, tip3,
+  steel opponent) on up to N fine-mesh survivors; a design fails if any region (tooth/arm/hub) has > 2 % more
+  plastic strain than the reference or more failed elements outside the tip. The reference's runs are cached in
+  `.eitri_reference_impact/` next to its spec (key: spec text, case, setup, IMPACT_VERSION). Skipped (with a
+  message) when OpenCourant isn't installed.
+- TPU opponent (`eitri impact --opponent tpu`, physics/explicit/tpu.py): a 3D-printed TPU 95A wall -- solid skin
+  (Ogden + Prony series) over a homogenized 15 % gyroid core (LAW70 rate-dependent foam), torn elements deleted
+  at 4.5-5.5 strain (without it crushed TPU distorts until mass scaling explodes: "TOTAL MASS ERROR LIMIT").
+  Single-element checks (projects/tpu_check): skin E ~27 MPa, core plateau 0.06 MPa; at 5000/s ~1.8x / 2x.
+  Trust: order of magnitude of the pulse and design-vs-design ranking; validation data listed in tpu.py.
+- UI (eitri/ui/, `eitri ui`): stdlib HTTP server over the project files + one page (three.js from jsdelivr).
+  Every simulation becomes the same animation bundle (ui/anim.py: manifest.json, mesh.bin, frames.bin,
+  vis.bin), built on first view and cached in the run: static FEA (hit force ramped to first yield on the
+  spinning stress), explicit hits (VTK series, eroded cells hidden), topology (density_history.npz). Deep links
+  `#project=..&run=..&tab=viewer&anim=N&frame=K`. Chrome swallows fetch() of URLs ending in ".bin" (a 204 that
+  never reaches the server), so arrays go through /api/data?path=. Screenshots for checking the page: Windows
+  Chrome headless (`chrome.exe --headless=new --use-angle=swiftshader --enable-unsafe-swiftshader
+  --virtual-time-budget=15000 --screenshot=...`). Never `pkill -f` the server (it matches your own shell).
 - Center of percussion is intentionally not an objective: a balanced rotor's axle always reacts the full
   impulse. Imbalance is a hard constraint; we report impulse / peak force / inward force fraction.
 

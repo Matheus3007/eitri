@@ -68,6 +68,38 @@ class Deck:
         self.add(f"/MAT/PLAS_JOHNS/{mid}", title, _f(rho), _f(E, nu) + _i(0, 0) + _f(0.0),
                  _f(A, B, n, eps_max, 0.0), _f(c, eps_dot0) + _i(0, 0) + _f(0.0, 0.0), _f(0, 0, 0, 0, 0))
 
+    def funct(self, fid: int, title: str, xy) -> None:
+        self.add(f"/FUNCT/{fid}", title, *[_f(x, y) for x, y in xy])
+
+    def mat_ogden(self, mid: int, title: str, rho: float, nu: float, mu, alpha, prony_g=(), prony_tau=()) -> None:
+        """LAW42 Ogden hyperelastic (up to 10 terms; initial shear modulus = sum mu_i alpha_i / 2) with a Prony
+        viscous series: shear moduli `prony_g` (GPa) relaxing with times `prony_tau` (ms)."""
+        mu, alpha = list(mu) + [0.0] * (10 - len(mu)), list(alpha) + [0.0] * (10 - len(alpha))
+        m = len(prony_g)
+        lines = [f"/MAT/LAW42/{mid}", title, _f(rho), _f(nu, 0.0) + _i(0, 0) + _f(0.0) + _i(m, 0),
+                 _f(*mu[:5]), _f(*mu[5:]), _f(*alpha[:5]), _f(*alpha[5:])]
+        for vals in (prony_g, prony_tau):
+            vals = list(vals)
+            lines += [_f(*vals[k:k + 5]) for k in range(0, len(vals), 5)]
+        self.add(*lines)
+
+    def mat_foam_tab(self, mid: int, title: str, rho: float, E0: float, nu: float, Emax: float, eps_max: float,
+                     load: list[tuple[int, float, float]], unload: list[tuple[int, float, float]] = ()) -> None:
+        """LAW70 tabulated foam: loading curves (function id, strain rate 1/ms, scale) stress(GPa) vs strain."""
+        self.add(f"/MAT/LAW70/{mid}", title, _f(rho), _f(E0, nu, Emax, eps_max) + _i(0),
+                 _f(0.0) + _i(0, len(load), len(unload), 0) + _f(0.0, 0.0),
+                 *[_i(f) + _f(r, sc) for f, r, sc in load], *[_i(f) + _f(r, sc) for f, r, sc in unload])
+
+    def impvel(self, iid: int, title: str, fid: int, direction: str, grnod: int, scale: float) -> None:
+        """Imposed velocity: function `fid` (of time) x `scale` along X/Y/Z on the nodes of `grnod`."""
+        self.add(f"/IMPVEL/{iid}", title, _i(fid) + f"{direction:>10s}" + " " * 10 + _i(0, grnod) + " " * 10 + _i(0),
+                 _f(1.0, scale, 0.0, 1e30))
+
+    def fail_tensstrain(self, mid: int, eps_start: float, eps_rupture: float) -> None:
+        """Element deleted when its max principal (engineering) strain goes from `eps_start` to `eps_rupture`:
+        tearing of elastomers, which have no plastic strain for a ductile-damage law."""
+        self.add(f"/FAIL/TENSSTRAIN/{mid}", _f(eps_start, eps_rupture) + _i(0) + _f(0.0, 0.0) + _i(0), _i(0))
+
     def fail_johnson(self, mid: int, D: tuple, eps_dot0: float = 1.0) -> None:
         """Johnson-Cook damage; solids are deleted when the damage reaches 1 (ISOLID = 1)."""
         self.add(f"/FAIL/JOHNSON/{mid}", _f(*D), _f(eps_dot0) + _i(0, 1) + _f(0.0, 0.0) + " " * 10 + _i(0),

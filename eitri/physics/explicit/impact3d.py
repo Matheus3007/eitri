@@ -53,6 +53,10 @@ class ImpactSetup:
     dt_min_ms: float = 3e-5
     skin_mm: float = 10.0
     opponent_material: str | None = None  # default: the weapon's material
+    # "steel": the failure test (a hardened-steel face on a rigid backing); "tpu": a 3D-printed TPU wall
+    # (eitri/physics/explicit/tpu.py), what most beetleweights actually wear
+    opponent: str = "steel"
+    tpu: object = None  # tpu.TPUWall; default TPUWall()
 
 
 @dataclass
@@ -66,7 +70,13 @@ class ImpactResult:
 def _box_mesh(lo, hi, h: float):
     """Hex mesh of an axis-aligned box in a local frame: nodes (n, 3), bricks (m, 8) 0-based."""
     ns = [max(1, int(math.ceil((b - a) / h))) for a, b in zip(lo, hi)]
-    g = [np.linspace(a, b, k + 1) for a, b, k in zip(lo, hi, ns)]
+    return _grid_mesh(*[np.linspace(a, b, k + 1) for a, b, k in zip(lo, hi, ns)])
+
+
+def _grid_mesh(gx, gy, gz):
+    """Hex mesh on the tensor grid gx x gy x gz: nodes (n, 3), bricks (m, 8) 0-based (i, j, k loop order)."""
+    g = [np.asarray(gx), np.asarray(gy), np.asarray(gz)]
+    ns = [len(a) - 1 for a in g]
     X, Y, Z = np.meshgrid(*g, indexing="ij")
     nodes = np.c_[X.ravel(), Y.ravel(), Z.ravel()]
     idx = np.arange(len(nodes)).reshape(X.shape)
@@ -100,22 +110,40 @@ def build(weapon, mat, omega_rad_s: float, opponent_mass_kg: float, closing_mps:
     e_r = np.array([math.cos(a_hit), math.sin(a_hit), 0.0])
     e_t = s * np.array([-math.sin(a_hit), math.cos(a_hit), 0.0])  # the way the tooth moves
     e_z = np.array([0.0, 0.0, 1.0])
-    depth_r, thick_t, half_z = 30.0, 20.0, max(15.0, t)
-    # finer at the face the tooth hits (local y = 0), coarser behind
-    loc, br = _box_mesh((R - c_len, 0.0, -half_z), (R + depth_r - c_len, thick_t, half_z), 2.0)
+    def lin(a, b, h):
+        return np.linspace(a, b, max(1, int(math.ceil((b - a) / h))) + 1)
+
+    from eitri import materials
+
+    omat = materials.get(setup.opponent_material) if setup.opponent_material else mat
+    if setup.opponent == "tpu":
+        from eitri.physics.explicit.tpu import TPUWall
+
+        wall = setup.tpu or TPUWall()
+        depth_r, half_z = 40.0, max(20.0, t)
+        sk, co = wall.skin_mm, wall.core_mm
+        gy = np.unique(np.concatenate([lin(0, sk, 0.5), lin(sk, sk + co, 1.5), lin(sk + co, 2 * sk + co, 0.5)]))
+        loc, br = _grid_mesh(lin(R - c_len, R - c_len + depth_r, 1.5), gy, lin(-half_z, half_z, 2.0))
+        thick_t = wall.thickness_mm
+        yc = loc[br][:, :, 1].mean(axis=1)
+        epart = np.where((yc < sk) | (yc > sk + co), 2, 3)  # skins: part 2, core: part 3
+        backing = np.abs(loc[:, 1] - thick_t) < 1e-9  # the robot's mass hangs on the back skin
+        vol_skin = 2 * sk * depth_r * 2 * half_z
+        box_mass = wall.rho_s * 1e-9 * (vol_skin + wall.infill * co * depth_r * 2 * half_z)
+    else:
+        depth_r, thick_t, half_z = 30.0, 20.0, max(15.0, t)
+        loc, br = _box_mesh((R - c_len, 0.0, -half_z), (R + depth_r - c_len, thick_t, half_z), 2.0)
+        epart = np.full(len(br), 2)
+        backing = loc[:, 1] >= setup.skin_mm - 1e-9  # rigid part of the opponent (behind the skin)
+        box_mass = omat.density * 1e-9 * depth_r * thick_t * 2 * half_z
     box = loc[:, :1] * e_r + loc[:, 1:2] * e_t + loc[:, 2:3] * e_z
     if s < 0:  # the local frame is left-handed for CW spin: keep the bricks right-handed
         br = br[:, [0, 3, 2, 1, 4, 7, 6, 5]]
     n_b = len(box)
-    backing = loc[:, 1] >= setup.skin_mm - 1e-9  # rigid part of the opponent (behind the skin)
-    box_mass = mat.density * 1e-9 * depth_r * thick_t * 2 * half_z
     rb_mass = max(opponent_mass_kg - box_mass, 0.05 * opponent_mass_kg)
     a_, b_, c_ = depth_r, thick_t, 2 * half_z
     J_box = opponent_mass_kg / 12 * np.array([b_**2 + c_**2, a_**2 + c_**2, a_**2 + b_**2])  # kg mm^2
     box_c = ((R - c_len + depth_r / 2) * e_r + thick_t / 2 * e_t)
-    from eitri import materials
-
-    omat = materials.get(setup.opponent_material) if setup.opponent_material else mat
 
     hub_id, opp_id = n_w + n_b + 1, n_w + n_b + 2
     d = radioss.Deck(name)
@@ -127,16 +155,27 @@ def build(weapon, mat, omega_rad_s: float, opponent_mass_kg: float, closing_mps:
     d.mat_johnson_cook(1, mat.name, mat.density * 1e-9, mat.E * 1e-3, mat.nu, jc["A"] * 1e-3, jc["B"] * 1e-3,
                        jc["n"], jc["C"], eps_dot0=1e-3)
     d.fail_johnson(1, jc_damage(jc["eps_f"]), eps_dot0=1e-3)
-    ojc = omat.johnson_cook()
-    d.mat_johnson_cook(2, f"opponent {omat.name}", omat.density * 1e-9, omat.E * 1e-3, omat.nu, ojc["A"] * 1e-3,
-                       ojc["B"] * 1e-3, ojc["n"], ojc["C"], eps_dot0=1e-3)
-    d.fail_johnson(2, jc_damage(ojc["eps_f"]), eps_dot0=1e-3)
     d.prop_solid(1, "weapon tetra10", isolid=0, itetra10=1000)
-    d.prop_solid(2, "opponent bricks", isolid=24)
+    if setup.opponent == "tpu":
+        wall.write(d, 2, 3, 900)
+        d.prop_solid(2, "TPU bricks", isolid=17)  # fully integrated: large strains, no hourglass modes
+        d.part(2, "opponent TPU skin", 2, 2)
+        d.part(3, "opponent TPU gyroid core", 2, 3)
+    else:
+        ojc = omat.johnson_cook()
+        d.mat_johnson_cook(2, f"opponent {omat.name}", omat.density * 1e-9, omat.E * 1e-3, omat.nu,
+                           ojc["A"] * 1e-3, ojc["B"] * 1e-3, ojc["n"], ojc["C"], eps_dot0=1e-3)
+        d.fail_johnson(2, jc_damage(ojc["eps_f"]), eps_dot0=1e-3)
+        d.prop_solid(2, "opponent bricks", isolid=24)
+        d.part(2, "opponent", 2, 2)
     d.part(1, "weapon", 1, 1)
-    d.part(2, "opponent", 2, 2)
     d.tetra10(1, m.elems)
-    d.brick(2, br + n_w + 1, first_id=len(m.elems) + 1)
+    first = len(m.elems) + 1
+    for pid in sorted(set(epart.tolist())):
+        sel = np.nonzero(epart == pid)[0]
+        d.brick(pid, br[sel] + n_w + 1, first_id=first)
+        first += len(sel)
+    opp_parts = sorted(set(epart.tolist()))
 
     # hub: everything inside the center cutout radius (lock walls and bosses) + the bolt hole walls
     on_hub = r < weapon.center_cutout_r_mm() + 0.05
@@ -160,12 +199,12 @@ def build(weapon, mat, omega_rad_s: float, opponent_mass_kg: float, closing_mps:
 
     near = (r > R - weapon.tooth_depth_mm() - 15) & (np.hypot(xy[:, 0] - tip[0], xy[:, 1] - tip[1]) < 60)
     d.grnod(6, "tooth nodes", np.nonzero(near)[0] + 1)
-    d.surf_part(1, "opponent surface", [2])
+    d.surf_part(1, "opponent surface", opp_parts)
     d.inter7(1, "tooth vs opponent", 6, 1, gapmin=0.2, fric=setup.friction)
 
     d.th("INTER", 1, "contact", ["FNX", "FNY", "FNZ", "FTX", "FTY", "FTZ"], [1])
     d.th("RBODY", 2, "hub and opponent", ["DEF"], [1, 2])
-    d.th("PART", 3, "parts", ["DEF"], [1, 2])
+    d.th("PART", 3, "parts", ["DEF"], [1, *opp_parts])
     d.run(setup.tstop_ms, setup.anim_dt_ms, setup.anim_dt_ms / 10, anim_elem=("VONM", "EPSP"),
           dt_min_ms=setup.dt_min_ms)
     d.write(folder)
@@ -393,3 +432,92 @@ def compare_md(rows: dict[str, dict[str, dict]], ref_name: str, design_name: str
 
 def _fmt(v) -> str:
     return "-" if v is None else (f"{v:.4g}" if isinstance(v, float) else str(v))
+
+
+# --- final gate: the explicit hits against the reference ------------------------------------------------
+IMPACT_VERSION = 1  # bump when the explicit model changes (reference cache key)
+GATE_CASES = ("bite", "tip3")
+
+
+def available() -> bool:
+    import os
+
+    oc = Path(os.environ.get("OPENCOURANT_PATH", Path.home() / "opt" / "OpenCourant"))
+    return (oc / "exec").exists() and radioss.WRAPPER.exists()
+
+
+def run_spec(spec, design: dict | None, material: str | None, folder: Path, case: str,
+             setup: ImpactSetup | None = None) -> ImpactResult:
+    """One explicit hit of a spec's design (default: its fixed design) with the spec's drive and fight."""
+    from eitri import materials
+    from eitri.evaluate import build_weapon, single_tooth_bite_mm
+    from eitri.physics import drive as drive_mod
+
+    w = build_weapon(spec, design if design is not None else spec.fixed_design())
+    mat = materials.get(material or spec.material.names()[0])
+    J = (spec.drive.motor.rotor_inertia_kgm2 if spec.drive.motor else 0.0) * spec.drive.ratio ** 2
+    setup = setup or ImpactSetup()
+    setup.case = case
+    return simulate(w, mat, drive_mod.top_speed_rad_s(spec.drive), spec.context.opponent_mass_kg,
+                    spec.context.closing_speed_mps, single_tooth_bite_mm(spec), J, folder, setup)
+
+
+def reference_impact(ref_spec_path: str, case: str, setup: ImpactSetup | None = None) -> dict:
+    """The reference's explicit-hit summary, cached next to its spec (key: spec text, case, setup, version)."""
+    import hashlib
+    import json
+    from dataclasses import asdict
+
+    from eitri.spec import load
+
+    setup = setup or ImpactSetup()
+    src = Path(ref_spec_path)
+    key = hashlib.sha1(f"{src.read_text()}|{case}|{asdict(setup) | {'case': case, 'threads': 0}}|"
+                       f"{IMPACT_VERSION}".encode()).hexdigest()[:16]
+    folder = src.parent / ".eitri_reference_impact" / f"{case}_{key}"
+    cached = folder / "summary.json"
+    if cached.exists():
+        return json.loads(cached.read_text())
+    r = run_spec(load(src), None, None, folder, case, setup)
+    if not r.ok:
+        raise RuntimeError(f"reference impact ({case}) failed:\n{r.log[-1500:]}")
+    s = summary(r.metrics)
+    cached.write_text(json.dumps(s, indent=1))
+    return s
+
+
+def gate_failures(mine: dict, ref: dict) -> list[str]:
+    """What is worse than the reference (2 % tolerance on plastic strain; failed elements outside the tip)."""
+    out = []
+    for reg in ("tooth", "arm", "hub"):
+        r = (ref.get("plastic_strain_by_region") or {}).get(reg)
+        d = (mine.get("plastic_strain_by_region") or {}).get(reg)
+        if r is not None and d is not None and d > r * 1.02 + 1e-4:
+            out.append(f"plastic strain in the {reg}: {d:.4f} vs {r:.4f}")
+    if (mine.get("failed_body") or 0) > (ref.get("failed_body") or 0):
+        out.append(f"failed elements outside the tip: {mine.get('failed_body')} vs {ref.get('failed_body')}")
+    return out
+
+
+def gate(spec, design: dict | None, material: str | None, folder: Path, log=print,
+         setup: ImpactSetup | None = None) -> dict:
+    """Both gate hits on a design and the reference; {"ok", "cases": {case: {design, reference, worse}}}."""
+    out = {"ok": True, "cases": {}}
+    for case in GATE_CASES:
+        log(f"    explicit {case}: reference ...")
+        ref = reference_impact(spec.reference.spec, case, setup)
+        log(f"    explicit {case}: design ...")
+        r = run_spec(spec, design, material, folder / case, case, setup)
+        if not r.ok:
+            out["ok"] = False
+            out["cases"][case] = {"error": r.log[-800:]}
+            continue
+        mine = summary(r.metrics)
+        worse = gate_failures(mine, ref)
+        out["cases"][case] = {"design": mine, "reference": ref, "worse": worse}
+        out["ok"] &= not worse
+        log(f"    explicit {case}: {'OK' if not worse else 'WORSE: ' + '; '.join(worse)}")
+    rows = {c: {"design": v["design"], "reference": v["reference"]} for c, v in out["cases"].items() if "design" in v}
+    if rows:
+        (folder / "impact_compare.md").write_text(compare_md(rows, "reference", "design"))
+    return out

@@ -36,6 +36,7 @@ class TopoResult:
     keep: np.ndarray  # bool per element
     history: list[dict] = field(default_factory=list)
     constraint_error: dict = field(default_factory=dict)
+    snapshots: list[tuple[int, np.ndarray]] = field(default_factory=list)  # (iteration, density) for animation
 
     def nodal_density(self) -> np.ndarray:
         n = len(self.mesh.nodes)
@@ -367,7 +368,7 @@ def optimize(domain, E: float, nu: float, density: float, mass_kg: float, moi_kg
             log(f"    grad check var {i}: adjoint {g0[i]:.6e} finite difference {fd:.6e}")
         return None
 
-    hist = []
+    hist, snapshots = [], []
     p, beta = 1.0, 1.0
     step = move
     for it in range(iters):
@@ -376,6 +377,8 @@ def optimize(domain, E: float, nu: float, density: float, mass_kg: float, moi_kg
         if p >= 3.0 and it % 15 == 0:
             beta = min(32.0, 2 * beta)  # push to 0/1: grey density is cheap mass that doesn't carry load
         obj, g, comp, xf = objgrad(x, p, beta)
+        if it % 4 == 0:
+            snapshots.append((it, xf.astype(np.float32)))
         # adaptive move limit: shrink when the objective went up at the same penalty (zig-zag), else grow
         if hist and hist[-1]["p"] == p and hist[-1]["beta"] == beta and obj > hist[-1]["objective"]:
             step = max(0.01, step * 0.6)
@@ -403,5 +406,6 @@ def optimize(domain, E: float, nu: float, density: float, mass_kg: float, moi_kg
     err = rows @ xf - target
     if moi_kgm2 is None:
         err = np.insert(err, 1, 0.0)
-    return TopoResult(mesh, xf, keep, hist, {"mass_kg": float(err[0]), "moi_kgm2": float(err[1] * 1e-6),
+    snapshots.append((len(hist), xf.astype(np.float32)))
+    return TopoResult(mesh, xf, keep, hist, snapshots=snapshots, constraint_error={"mass_kg": float(err[0]), "moi_kgm2": float(err[1] * 1e-6),
                                               "first_moment_kgmm": [float(err[2]), float(err[3])]})

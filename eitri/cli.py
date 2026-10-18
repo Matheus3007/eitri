@@ -281,13 +281,18 @@ def eval_cmd(
     raise typer.Exit(0 if all(r.get("ok") for r in results) else 1)
 
 
-def _finish_optimize(spec, spec_path: Path, run: Path, res, verify_top: int) -> None:
-    """Fine-mesh verification of the top candidates, outputs, summary; exits with the verdict."""
+def _finish_optimize(spec, spec_path: Path, run: Path, res, verify_top: int, impact_gate: int = 1) -> None:
+    """Fine-mesh verification of the top candidates, then (with a [reference] and OpenCourant installed) the
+    explicit-hit gate on up to `impact_gate` of the fine-mesh survivors; outputs, summary; exits with the verdict."""
     render.pareto_png(res.history, run / "pareto.png", spec.objective.name, res.best)
     best = res.best
     if best is None or "error" in best:
         typer.echo("no valid design found; see history.jsonl")
         raise typer.Exit(1)
+    from eitri.physics.explicit import impact3d
+
+    use_gate = impact_gate > 0 and spec.reference is not None and impact3d.available()
+    want = impact_gate if use_gate else 1
     # Verify the top candidates on the fine mesh; the winner is the best one that still passes there.
     ranked = sorted((h for h in res.history if h["ok"]), key=lambda h: -h["score"])[:verify_top] or [best]
     verified = []
@@ -297,8 +302,23 @@ def _finish_optimize(spec, spec_path: Path, run: Path, res, verify_top: int) -> 
         verified.append((cand, v))
         typer.echo(f"  fine-mesh check trial {cand['trial']}: {spec.objective.name} "
                    f"{cand.get('objective', float('nan')):.4g} -> {'ok' if v.get('ok') else 'FAIL ' + ','.join(v.get('failed', [v.get('error', '')]))}")
-        if v.get("ok"):
+        if sum(bool(x.get("ok")) for _, x in verified) >= want:
             break
+    gates = {}
+    if use_gate:
+        for cand, v in [(c, x) for c, x in verified if x.get("ok")][:impact_gate]:
+            typer.echo(f"  explicit-hit gate, trial {cand['trial']}:")
+            g = impact3d.gate(spec, cand["design"], cand["material"], run / "impact" / f"trial{cand['trial']}",
+                              log=typer.echo)
+            gates[cand["trial"]] = g
+            v["impact_gate"] = g
+            if not g["ok"]:
+                v["ok"] = False
+                v.setdefault("failed", []).append("impact_gate")
+            else:
+                break
+    elif impact_gate > 0 and spec.reference is not None:
+        typer.echo("  explicit-hit gate skipped: OpenCourant not installed (see tools/opencourant.sh)")
     best, verify = next(((c, v) for c, v in verified if v.get("ok")), verified[0])
     (run / "best").mkdir(exist_ok=True)
     _write_outputs(run / "best", spec, spec_path, [verify])
@@ -313,6 +333,7 @@ def _finish_optimize(spec, spec_path: Path, run: Path, res, verify_top: int) -> 
         "fine_mesh_checks": [{"trial": c["trial"], "objective": c.get("objective"), "ok": bool(v.get("ok")),
                               "failed": v.get("failed", [v.get("error")])} for c, v in verified],
         "best_verified_fine_mesh": _clean(public(verify)),
+        "impact_gate": _clean({str(k): v for k, v in gates.items()}),
         "best_spec": str(run / "best" / "spec_fixed.toml"),
     }
     (run / "summary.json").write_text(json.dumps(_clean(summary), indent=2))
@@ -342,6 +363,7 @@ def optimize_cmd(
     polish: bool = typer.Option(True, help="Newton repair/climb of the best candidates, then CMA-ES around them"),
     local_trials: int | None = typer.Option(None, help="CMA-ES designs in the polish phase (default trials/4)"),
     radius: float = typer.Option(0.15, help="CMA-ES box: +- this fraction of each parameter's range"),
+    impact_gate: int = typer.Option(1, help="explicit-hit gate on up to this many fine-mesh survivors (0 = off)"),
 ):
     """Optimize the [design] ranges for the [objective] under [constraints]; verify the best on a fine mesh."""
     from eitri.optimize import optimize, warm_designs
@@ -353,7 +375,7 @@ def optimize_cmd(
     warm = warm_designs(warm_start, warm_k) if warm_start else []
     res = optimize(spec, trials, workers, seed, run / "history.jsonl", log=typer.echo, warm=warm, polish=polish,
                    local_trials=local_trials, radius=radius)
-    _finish_optimize(spec, spec_path, run, res, verify_top)
+    _finish_optimize(spec, spec_path, run, res, verify_top, impact_gate)
 
 
 def _start_design(start: str) -> dict:
@@ -377,6 +399,7 @@ def refine_cmd(
     radius: float = typer.Option(0.15, help="CMA-ES box: +- this fraction of each parameter's range"),
     seed: int = typer.Option(0),
     verify_top: int = typer.Option(5),
+    impact_gate: int = typer.Option(1, help="explicit-hit gate on up to this many fine-mesh survivors (0 = off)"),
 ):
     """Local search from one design: Newton repair (if it fails checks) or climb, then CMA-ES around it. The
     spec's [design] ranges bound the search; values outside them are clipped."""
@@ -411,7 +434,8 @@ def refine_cmd(
                 local_trials, radius)
     feasible = [h for h in history if h["ok"]]
     best = max(feasible, key=lambda h: h["score"]) if feasible else min(history, key=lambda h: h["violation"])
-    _finish_optimize(spec, spec_path, run, OptimizeResult(history, best, bool(feasible), history[0]), verify_top)
+    _finish_optimize(spec, spec_path, run, OptimizeResult(history, best, bool(feasible), history[0]), verify_top,
+                     impact_gate)
 
 
 @app.command("compare")
@@ -454,6 +478,7 @@ def impact_cmd(
     ref: bool = typer.Option(True, help="also run the [reference] weapon, same setup, and compare"),
     tstop: float = typer.Option(1.0, help="simulated time [ms]"),
     threads: int = typer.Option(8, help="solver threads per run"),
+    opponent: str = typer.Option("steel", help="steel (failure test) | tpu (3D-printed TPU wall, see tpu.py)"),
 ):
     """Explicit 3D impact (OpenCourant): the spinning weapon hits the opponent; contact pulse, energy, plastic
     strain and failure per region, VTK frames for the visualizer. Needs tools/opencourant.sh (see it)."""
@@ -476,8 +501,8 @@ def impact_cmd(
         omega = drive_mod.top_speed_rad_s(sp.drive)
         J = (sp.drive.motor.rotor_inertia_kgm2 if sp.drive.motor else 0.0) * sp.drive.ratio ** 2
         for c in cases:
-            folder = run / f"{tag}_{c}"
-            setup = impact3d.ImpactSetup(case=c, tstop_ms=tstop, threads=threads)
+            folder = run / f"{tag}_{c}_{opponent}"
+            setup = impact3d.ImpactSetup(case=c, tstop_ms=tstop, threads=threads, opponent=opponent)
             typer.echo(f"  {tag} {c}: running ...")
             r = impact3d.simulate(w, mat, omega, sp.context.opponent_mass_kg, sp.context.closing_speed_mps,
                                   single_tooth_bite_mm(sp), J, folder, setup)
@@ -495,6 +520,15 @@ def impact_cmd(
         typer.echo(md)
     (run / "impact.json").write_text(json.dumps(_clean(out), indent=1))
     typer.echo(f"run: {run}")
+
+
+@app.command("ui")
+def ui_cmd(port: int = typer.Option(8765), host: str = typer.Option("127.0.0.1")):
+    """Local web app: browse projects and runs, compare with the reference, animate every simulation (static
+    FEA load ramp, explicit hits, topology iterations), edit specs and launch eval/optimize/topo/impact."""
+    from eitri.ui.server import serve
+
+    serve(host, port)
 
 
 @app.command("faces")
@@ -515,6 +549,7 @@ def topo_cmd(
     spec_path: Path,
     no_eval: bool = typer.Option(False, "--no-eval", help="only the density fields and pockets"),
     fine: bool = typer.Option(False, "--fine", help="evaluate the designs on the verification mesh"),
+    impact_gate: int = typer.Option(1, help="explicit-hit gate on up to this many passing designs (0 = off)"),
 ):
     """Topology optimization of the [topology] base's free region, one design per MOI target; each design
     is balanced (Newton), evaluated and compared like any other (spec.toml per design, run it with eval)."""
@@ -540,6 +575,15 @@ def topo_cmd(
                     worse = [x["group"] + ": " + x["item"] for x in next(iter(o["compare"].values())) if x["worse"]]
                     r["worse_than_reference"] = worse
             typer.echo(f"  MOI {r['moi_frac']:.3f}: " + _summary(res).replace("\n", "\n    "))
+        from eitri.physics.explicit import impact3d
+
+        if impact_gate and spec.reference is not None and impact3d.available():
+            # explicit-hit gate on the passing designs, highest MOI first
+            for r in sorted((r for r in rows if r.get("ok")), key=lambda r: -r["moi_frac"])[:impact_gate]:
+                typer.echo(f"  explicit-hit gate, MOI {r['moi_frac']:.3f}:")
+                g = impact3d.gate(spec_mod.load(r["spec"]), None, None, Path(r["dir"]) / "impact", log=typer.echo)
+                r["impact_gate"] = g
+                r["ok"] = r["ok"] and g["ok"]
         (out / "topo.json").write_text(json.dumps(_clean(rows), indent=2))
     typer.echo(f"run: {out}")
 
