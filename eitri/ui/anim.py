@@ -145,6 +145,9 @@ def from_explicit(vtk_dir: Path, out: Path, dt_ms: float, title: str = "explicit
     part = f0["cell"].get("PART_ID")
     fields = [("plastic strain", "-"), ("von Mises", "MPa"), ("speed", "m/s"), ("part", "-")]
     frames, disp, vis, times = [], [], [], []
+    # cells "eroded" already at t = 0 are not failures: Radioss deactivates elements whose nodes all belong to a
+    # rigid body (the hub's hole-wall layer, the opponent's rigid backing). Draw them; hide only later erosion.
+    rigid = f0["cell"].get("EROSION_STATUS", np.ones(len(f0["cells"]))) == 0
     # cell -> node averaging matrix over the surface nodes
     for k, fv in enumerate(frames_vtk):
         d = f0 if k == 0 else read_vtk(fv)
@@ -165,7 +168,7 @@ def from_explicit(vtk_dir: Path, out: Path, dt_ms: float, title: str = "explicit
         nodal["speed"] = np.linalg.norm(vel[used], axis=1) if vel is not None else np.zeros(len(used))
         frames.append(nodal)
         disp.append(p - pos0)
-        vis.append(alive[owner] != 0)
+        vis.append((alive[owner] != 0) | rigid[owner])
         times.append(k * dt_ms)
     return write(out, "explicit", title, pos0, tris_s, times, "ms", fields, frames, disp, vis,
                  extra={"default_field": "plastic strain"})

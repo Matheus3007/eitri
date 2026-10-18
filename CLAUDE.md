@@ -217,7 +217,7 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   has one (a topology project's own spec has no single design -- evaluate one of its designs).
   Every simulation becomes the same animation bundle (ui/anim.py: manifest.json, mesh.bin, frames.bin, vis.bin),
   built on first view and cached in the run: static FEA (hit force ramped to first yield on the spinning stress),
-  explicit hits (VTK series, eroded cells hidden), topology (density_history.npz). /api/timeline adds solver steps
+  explicit hits (VTK series, cells eroded after t = 0 hidden; cells already "eroded" at t = 0 are elements Radioss deactivated inside a rigid body -- hub wall layer, opponent backing -- and are drawn), topology (density_history.npz). /api/timeline adds solver steps
   per frame (explicit: cycles interpolated from the engine .out; FEA: load increments; topo: iterations) and time
   curves (explicit: contact force from the cumulative-impulse TH, energies). The animation list order is stable
   (converting one doesn't move it). Colormaps are sRGB; vertex colors must be converted to linear (or every map
