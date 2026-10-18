@@ -35,7 +35,7 @@ Always go through the wrapper, which sets `UV_PROJECT_ENVIRONMENT`:
 ./eitri.sh eitri topo projects/<name>/spec.toml [--no-eval]   # needs [topology]; one design per MOI target
 ./eitri.sh eitri faces projects/<name>/spec.toml               # numbered boundary edges + keep regions
 ./eitri.sh eitri impact projects/<name>/spec.toml [--case bite|tip3|all] [--no-ref]   # explicit 3D hit
-./eitri.sh eitri ui [--port 8765]   # local web app: runs, comparisons, animated simulations, spec editor, jobs
+./eitri.sh eitri ui [--port 8765] [--no-reload]   # web app: runs, compare, simulations, STEP part, spec, jobs (hot reload)
 ./eitri.sh eitri check projects/<name>/spec.toml
 ./eitri.sh eitri materials
 ./eitri.sh eitri show projects/<name>/spec.toml   # OCP CAD Viewer panel in VS Code (needs `--extra viewer`)
@@ -193,18 +193,36 @@ System deps (apt, need the user's sudo password): `libglu1-mesa` (gmsh), `calcul
   healthy elements. Single-element checks (projects/tpu_check): skin E ~27 MPa, core plateau 0.06 MPa; at
   5000/s ~1.8x / 2x.
   Trust: order of magnitude of the pulse and design-vs-design ranking; validation data listed in tpu.py.
-- UI (eitri/ui/, `eitri ui`): stdlib HTTP server over the project files + one page (three.js from jsdelivr).
-  Every simulation becomes the same animation bundle (ui/anim.py: manifest.json, mesh.bin, frames.bin,
-  vis.bin), built on first view and cached in the run: static FEA (hit force ramped to first yield on the
-  spinning stress), explicit hits (VTK series, eroded cells hidden), topology (density_history.npz). Deep links
-  `#project=..&run=..&tab=viewer&anim=N&frame=K`. The user runs IDM (Internet Download Manager): it hooks Chrome,
-  grabs anything that looks like a download (".bin" URLs, octet-stream), pops a window on their PC and hands
-  fetch() an empty 204. So arrays go through /api/data?dir=&part= as text/plain; never serve app data as a
-  download type, and never drive the user's Windows Chrome (it's their desktop). Check pages with
-  `./eitri.sh python tools/ui_shot.py out.png "project=..&run=..&tab=viewer&anim=0&frame=30" [--scroll SEL]`:
-  Playwright's headless Chromium inside WSL (dev dependency; its system libs nss/nspr/gbm/asound unpacked without
-  sudo via `apt-get download` + `dpkg -x` into ~/opt/chromium-libs/root). Restart the server after editing
-  eitri/ui/*.py (it imports them once); static files reload on their own. Never `pkill -f` the server (it matches your own shell).
+- UI (eitri/ui/, `eitri ui`): stdlib HTTP server over the project files + a no-build ES-module front end
+  (static/: app.js shell, overview.js, stage.js = three.js viewport + telemetry timeline + HUD, ui.js = Select and
+  editable Combo dropdowns, styles.css tokens). Quality bar (user, 2026-10-18): every UI pass ends with "would
+  SpaceX / Ferrari / Red Bull / Mercedes present this as theirs in an F1 engineering suite?" -- look at screenshots
+  and iterate until yes; no off-the-shelf widgets (no native video bar/selects for values).
+  Tabs: Overview (verdict, KPIs with delta vs the reference's latest eval, checks grouped with margin bars, rotating
+  part preview, simulations, run-type sections, figures, files), Compare (two panes, each any run x any view --
+  part / simulation / figure -- linked camera and time; A-vs-B table + B's compare.md), Simulation, Part (STEP
+  tessellated server-side by ui/part.py: faces unshared for sharp creases, B-rep edges, face ids for hover info,
+  section cut; cached in <run>/anim/part_<stem>), Spec (TOML highlighting), Jobs.
+  Hot reload: `eitri ui` runs ui/dev.py, which restarts the server child when any eitri/**/*.py changes; the page
+  holds /api/events (SSE): a new boot id reloads the page (state is in the hash), CSS changes swap in place, JS/HTML
+  changes reload, and new/changed runs under projects/ (directory-mtime scan every 3 s) refresh the sidebar and
+  toast. `--no-reload` serves directly. Jobs are detached shells writing `<log>.rc` and listed in
+  projects/.eitri_jobs.json, so they survive restarts; a job runs on the selected run's spec_fixed.toml when it
+  has one (a topology project's own spec has no single design -- evaluate one of its designs).
+  Every simulation becomes the same animation bundle (ui/anim.py: manifest.json, mesh.bin, frames.bin, vis.bin),
+  built on first view and cached in the run: static FEA (hit force ramped to first yield on the spinning stress),
+  explicit hits (VTK series, eroded cells hidden), topology (density_history.npz). /api/timeline adds solver steps
+  per frame (explicit: cycles interpolated from the engine .out; FEA: load increments; topo: iterations) and time
+  curves (explicit: contact force from the cumulative-impulse TH, energies). The animation list order is stable
+  (converting one doesn't move it). Colormaps are sRGB; vertex colors must be converted to linear (or every map
+  washes out). Deep links `#project=..&run=..&tab=simulation&sim=N&frame=K`. The user runs IDM (Internet
+  Download Manager): it hooks Chrome, grabs anything that looks like a download (".bin" URLs, octet-stream), pops a
+  window on their PC and hands fetch() an empty 204. So arrays go through /api/data?dir=&part= as text/plain; never
+  serve app data as a download type, and never drive the user's Windows Chrome (it's their desktop). Check pages
+  with `./eitri.sh python tools/ui_shot.py out.png "project=..&run=..&tab=simulation&sim=0&frame=30" [--scroll SEL]
+  [--click SEL --after S] [--size 1920x1080]`: Playwright's headless Chromium inside WSL (dev dependency; its system
+  libs nss/nspr/gbm/asound unpacked without sudo via `apt-get download` + `dpkg -x` into ~/opt/chromium-libs/root).
+  Never `pkill -f` the server (it matches your own shell); find its PID with `ss -ltnp`.
 - Center of percussion is intentionally not an objective: a balanced rotor's axle always reacts the full
   impulse. Imbalance is a hard constraint; we report impulse / peak force / inward force fraction.
 

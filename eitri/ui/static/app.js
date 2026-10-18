@@ -1,416 +1,488 @@
-import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+// Eitri UI shell: project/run navigation, tabs, live updates (hot reload + new runs), and the Simulation, Part,
+// Compare, Spec and Jobs panes. Everything restorable lives in the URL hash.
+import { $, h, esc, fmt, api, icon, Select, toast, splitLabel } from "./ui.js";
+import { SimView } from "./stage.js";
+import * as overview from "./overview.js";
+import { METRICS, HIT_METRICS, kindLabel, when, mdTables } from "./overview.js";
 
-const $ = (id) => document.getElementById(id);
-const api = async (url, opts) => {
-  const r = await fetch(url, opts);
-  const j = await r.json();
-  if (j && j.error) throw new Error(j.error);
-  return j;
-};
-const fmt = (v, d = 3) => (v === null || v === undefined || Number.isNaN(v) ? "–" :
-  typeof v === "number" ? (Math.abs(v) >= 1000 ? v.toFixed(0) : Number(v.toPrecision(d)).toString()) : String(v));
-const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+const TABS = [["overview", "Overview", "overview"], ["compare", "Compare", "compare"], ["simulation", "Simulation", "sim"],
+  ["part", "Part", "part"], ["spec", "Spec", "spec"], ["jobs", "Jobs", "jobs"]];
+const state = { project: null, projects: [], runs: [], run: null, tab: "overview", sim: 0, step: 0, runCache: new Map() };
 
-const state = { project: null, run: null, jobTimer: null, jobSel: null };
+// ---------- hash ----------
+function readHash() { return Object.fromEntries(new URLSearchParams(location.hash.slice(1))); }
+function writeHash(extra = {}) {
+  const p = new URLSearchParams();
+  if (state.project) p.set("project", state.project);
+  if (state.run) p.set("run", state.run.path);
+  p.set("tab", state.tab);
+  for (const [k, v] of Object.entries(extra)) if (v !== null && v !== undefined) p.set(k, v);
+  history.replaceState(null, "", "#" + p.toString());
+}
 
 // ---------- tabs ----------
-for (const t of document.querySelectorAll(".tab")) {
-  t.onclick = () => selectTab(t.dataset.pane);
-}
-function selectTab(name) {
-  for (const t of document.querySelectorAll(".tab")) t.classList.toggle("sel", t.dataset.pane === name);
-  for (const p of document.querySelectorAll(".pane")) p.classList.toggle("sel", p.id === name);
-  if (name === "viewer") {
-    viewer.resize();
-    if (!viewer.m && state.run?.anims.length && !state.restoring) { $("animSel").value = "0"; $("animSel").onchange(); }
-  }
-  if (name === "jobs") refreshJobs();
+$("tabs").innerHTML = TABS.map(([id, label, ic]) => `<div class="tab" data-tab="${id}">${icon(ic)}<span>${label}</span></div>`).join("");
+for (const t of $("tabs").children) t.onclick = () => selectTab(t.dataset.tab);
+function selectTab(tab) {
+  state.tab = tab;
+  for (const t of $("tabs").children) t.classList.toggle("sel", t.dataset.tab === tab);
+  for (const p of document.querySelectorAll(".pane")) p.classList.toggle("sel", p.id === tab);
+  writeHash();
+  if (tab === "simulation") showSimulation();
+  if (tab === "part") showPart();
+  if (tab === "compare") showCompare();
+  if (tab === "jobs") refreshJobs();
+  if (tab === "spec") showSpec();
 }
 
 // ---------- projects & runs ----------
+const projectSel = new Select($("projectDD"), { label: "Project", width: "250px", search: true, minMenu: 300,
+  onChange: (v) => openProject(v, { openLatest: true }) });
+
 async function loadProjects() {
-  const ps = await api("/api/projects");
-  $("projects").innerHTML = ps.map((p) => `<div class="item" data-name="${p.name}">${esc(p.title)}
-      <small>${p.type || "?"} · ${p.n_runs} runs${p.reference ? " · vs " + esc(p.reference.split("/").slice(-2, -1)[0]) : ""}</small></div>`).join("");
-  for (const el of $("projects").children) el.onclick = async () => {
-    await openProject(el.dataset.name);
-    if (state.runs?.length) await openRun(state.runs[0].path);
-  };
+  state.projects = await api("/api/projects");
+  projectSel.setOptions(state.projects.map((p) => ({ value: p.name, label: p.title, sub: `${p.type || "?"} · ${p.n_runs}` })), state.project);
 }
 
-async function openProject(name) {
+const RUN_ICON = { eval: "eval", optimize: "optimize", refine: "optimize", topo: "topo", impact: "impact", faces: "image", "explicit hit": "impact" };
+function runLabel(r) {
+  if (r.depth) return { name: r.name, icon: r.kind === "explicit hit" || /explicit|steel|tpu/.test(r.name) ? "impact" : "eval" };
+  return { name: kindLabel(r.kind), icon: RUN_ICON[r.kind] || "folder" };
+}
+function runSub(r) {
+  const bits = [];
+  if (!r.depth) bits.push(when(r.name).split(" · ")[1] || "");
+  if (r.energy_j) bits.push(`${fmt(r.energy_j)} J`, `${fmt(r.mass_g)} g`);
+  if (r.peak_kn !== undefined && r.peak_kn !== null) bits.push(`${fmt(r.peak_kn)} kN`, `${fmt(r.impulse_ns)} N·s`);
+  return bits.filter(Boolean).join(" · ");
+}
+
+async function openProject(name, { openLatest = false, keepRun = false } = {}) {
+  const changed = name !== state.project;
   state.project = name;
-  state.run = null;
-  // nothing from the previous project may linger in any tab
-  $("overview").innerHTML = `<p class="muted">no run selected</p>`;
-  $("compare").innerHTML = "";
-  $("animSel").innerHTML = `<option value="">animation…</option>`;
-  viewer.clear();
-  setHash();
-  for (const el of $("projects").children) el.classList.toggle("sel", el.dataset.name === name);
+  projectSel.set(name, false);
   const p = await api(`/api/project?name=${encodeURIComponent(name)}`);
-  $("specText").value = p.spec;
-  $("crumb").textContent = name;
-  $("runs").innerHTML = p.runs.map((r) => {
-    const pill = r.ok === undefined || r.ok === null ? "" : `<span class="pill ${r.ok ? "ok" : "bad"}">${r.ok ? "ok" : "fail"}</span>`;
-    const nums = r.energy_j ? `${fmt(r.energy_j)} J · ${fmt(r.mass_g)} g` :
-      r.peak_kn !== undefined ? `peak ${fmt(r.peak_kn)} kN · ${fmt(r.impulse_ns)} N·s` : "";
-    const sub = [r.kind, nums].filter(Boolean).join(" · ");
-    return `<div class="item ${r.depth ? "child" : ""}" data-path="${r.path}">${esc(r.depth ? r.name : r.name.replace(/-[a-z]+$/, ""))}${pill}${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
-  }).join("") || `<div class="item muted">no runs yet</div>`;
-  for (const el of $("runs").children) if (el.dataset.path) el.onclick = () => openRun(el.dataset.path);
-  state.runs = p.runs;
+  state.runs = p.runs; state.spec = p.spec;
+  const meta = state.projects.find((x) => x.name === name) || {};
+  $("sideHead").innerHTML = `<div class="eyebrow">Project</div><div class="title">${esc(meta.title || name)}</div>
+    <div class="meta"><span class="tag accent">${esc(meta.type || "?")}</span>${meta.reference ? `<span class="tag">vs ${esc(meta.reference.split("/").slice(-2, -1)[0])}</span>` : ""}
+    <span class="tag">${p.runs.filter((r) => !r.depth).length} runs</span></div>`;
+  renderRuns();
+  if (changed) { state.runCache.clear(); disposeCompare(); }
+  if (keepRun && state.run) return;
+  if (openLatest || changed) {
+    if (p.runs.length) await openRun(p.runs[0].path);
+    else { state.run = null; $("overview").innerHTML = `<div class="empty">${icon("folder")}<h3>No runs yet</h3>Run an evaluation from the Run menu.</div>`; refreshActive(); }
+  }
 }
 
-async function openRun(path) {
-  for (const el of $("runs").children) el.classList.toggle("sel", el.dataset.path === path);
-  $("overview").innerHTML = `<p class="muted">loading…</p>`;
+function renderRuns() {
+  let html = "", day = null;
+  for (const r of state.runs) {
+    if (!r.depth) {
+      const d = when(r.name).split(" · ")[0];
+      if (d && d !== day) { day = d; html += `<div class="run-day eyebrow">${esc(d)}</div>`; }
+    }
+    const L = runLabel(r), pill = r.ok === true ? `<span class="chip ok">PASS</span>` : r.ok === false ? `<span class="chip bad">FAIL</span>` : "";
+    html += `<div class="run ${r.depth ? "child" : ""} ${state.run?.path === r.path ? "sel" : ""}" data-path="${esc(r.path)}">
+      <span class="ico">${icon(L.icon)}</span><span class="nm">${esc(L.name)}</span>${pill || "<span></span>"}<span class="st">${esc(runSub(r))}</span></div>`;
+  }
+  $("runs").innerHTML = html || `<div class="empty" style="padding:30px 10px">no runs yet</div>`;
+  for (const el of $("runs").querySelectorAll(".run")) el.onclick = () => openRun(el.dataset.path);
+}
+
+async function getRun(path, fresh = false) {
+  if (!fresh && state.runCache.has(path)) return state.runCache.get(path);
   const r = await api(`/api/run?path=${encodeURIComponent(path)}`);
+  r._entry = state.runs.find((x) => x.path === path);
+  const i = state.runs.findIndex((x) => x.path === path);
+  r._children = [];
+  if (i >= 0 && !state.runs[i].depth) for (const x of state.runs.slice(i + 1)) { if (!x.depth) break; r._children.push(x); }
+  state.runCache.set(path, r);
+  return r;
+}
+
+async function openRun(path, { fresh = false } = {}) {
+  for (const el of $("runs").querySelectorAll(".run")) el.classList.toggle("sel", el.dataset.path === path);
+  const r = await getRun(path, fresh);
+  const runChanged = state.run?.path !== path;
   state.run = r;
-  setHash();
-  $("crumb").textContent = `${state.project} / ${r.name}`;
-  renderOverview(r);
-  renderCompare(r);
-  $("animSel").innerHTML = `<option value="">animation… (${r.anims.length})</option>` + r.anims.map((a, i) =>
-    `<option value="${i}">${esc(a.label || a.source)}</option>`).join("");
-  viewer.clear(r.anims.length ? "pick an animation" : "this run has no simulations to animate");
-  // in the viewer, switching run (or project) shows the new run's first simulation right away
-  if (r.anims.length && $("viewer").classList.contains("sel") && !state.restoring) {
-    $("animSel").value = "0";
-    await $("animSel").onchange();
+  if (runChanged) { state.sim = 0; state.step = 0; simLoaded = null; partLoaded = null; }
+  writeHash();
+  renderOverview();
+  refreshActive();
+}
+
+function refreshActive() {
+  if (state.tab === "simulation") showSimulation();
+  if (state.tab === "part") showPart();
+  if (state.tab === "compare") showCompare();
+  if (state.tab === "spec") showSpec();
+}
+
+// ---------- overview ----------
+let thumb = null;
+const ctx = { openSim: (i) => { state.sim = i; simLoaded = null; selectTab("simulation"); }, openRun: (p) => openRun(p), selectTab };
+function renderOverview() {
+  const r = state.run;
+  const el = $("overview");
+  const top = el.scrollTop;
+  thumb?.dispose(); thumb = null;
+  el.innerHTML = overview.render(r, ctx);
+  overview.wire(el, r, ctx);
+  el.scrollTop = top;
+  const host = el.querySelector("#thumbHost");
+  if (host && r.steps?.length) {
+    const t = thumb = new SimView(host, { compact: true });
+    t.hud.rc.style.display = "none";
+    t.stage.autoRotate = true;
+    t.stage.fitScale = 0.62;
+    t.stage.controls.enableZoom = false;
+    loadPartInto(t, r, 0).then(() => { t.hud.tl.innerHTML = ""; t.hud.tr.innerHTML = ""; t.stage.fit("iso"); }).catch((e) => console.error("part preview:", e.message));
   }
 }
 
-function renderOverview(r) {
-  const h = r.headline || {};
-  const cards = [["energy", h.energy_j, "J"], ["mass", h.mass_g, "g"], ["MOI", h.moi_gm2, "g·m²"],
-    ["imbalance", h.imbalance_gmm, "g·mm"], ["spin SF", h.sf_spin, ""], ["impact SF", h.sf_impact, ""],
-    ["first yield", h.yield_force_kn, "kN"]];
-  let html = r.headline ? `<div class="cards">${cards.map(([k, v, u]) => `<div class="card"><div class="k">${k}</div><div class="v">${fmt(v)} <small class="muted">${u}</small></div></div>`).join("")}</div>` : "";
-  if (r.topo) {
-    html += `<h3>Topology designs</h3><table><tr><th>MOI target</th><th>energy</th><th>mass</th><th>imbalance</th><th>verdict</th><th>worse than the reference</th></tr>${r.topo.map((d) =>
-      `<tr><td class="num">×${fmt(d.moi_frac)}</td><td class="num">${fmt(d.energy_j)} J</td><td class="num">${fmt((d.mass_kg || 0) * 1e3)} g</td><td class="num">${fmt(d.imbalance_gmm)} g·mm</td>
-       <td class="${d.ok ? "good" : "bad"}">${d.ok ? "pass" : "fail"}</td><td class="muted">${esc(worseSummary(d))}</td></tr>`).join("")}</table>`;
-  }
-  if (h.error) html += `<p class="bad">${esc(h.error)}</p>`;
-  if (r.checks?.length) {
-    html += `<h3>Checks ${h.ok ? '<span class="pill ok">all pass</span>' : '<span class="pill bad">' + (h.failed || []).length + " fail</span>"}</h3>
-      <table><tr><th>check</th><th>value</th><th>limit</th><th></th><th>detail</th></tr>${r.checks.map((c) =>
-        `<tr><td>${c.name}</td><td>${fmt(c.value, 4)}</td><td>${fmt(c.limit, 4)}</td><td class="${c.ok ? "good" : "bad"}">${c.ok ? "pass" : "FAIL"}</td><td class="muted">${esc(c.detail || "")}</td></tr>`).join("")}</table>`;
-  }
-  const imgs = r.images.filter((i) => !i.includes("compare_"));
-  if (imgs.length) html += `<div class="grid">${imgs.map((img) => `<figure><figcaption class="muted">${esc(img.split("/").slice(-3).join("/"))}</figcaption><img class="shot" src="/files/${img}"></figure>`).join("")}</div>`;
-  if (r.files.some((f) => f.endsWith("/history.jsonl"))) html += `<h3>Search history <button id="histPlay">▶ replay</button></h3>
-    <canvas id="hist" width="900" height="380" style="width:100%;max-width:900px;background:#11161c;border:1px solid var(--line);border-radius:8px"></canvas>
-    <div class="muted">each dot is one evaluated design: x mass, y energy; filled = passes every check; color = phase (global search, Newton repair, CMA-ES refine)</div>`;
-  if (r.summary) {
-    const S = r.summary;
-    html += `<h3>Optimization summary</h3><div class="cards">
-      <div class="card"><div class="k">designs evaluated</div><div class="v">${S.n_trials}</div></div>
-      <div class="card"><div class="k">pass every check</div><div class="v ${S.n_feasible ? "good" : "bad"}">${S.n_feasible}</div></div>
-      <div class="card"><div class="k">${S.n_feasible ? "winner" : "closest (none passed)"}</div><div class="v">#${S.best_trial} <small class="muted">${esc(S.best_phase || "")}</small></div></div></div>
-      ${S.fine_mesh_checks?.length ? `<table><tr><th>fine-mesh check</th><th>objective</th><th>verdict</th><th>failed</th></tr>${S.fine_mesh_checks.map((c) =>
-        `<tr><td>trial ${c.trial}</td><td class="num">${fmt(c.objective, 4)}</td><td class="${c.ok ? "good" : "bad"}">${c.ok ? "pass" : "fail"}</td><td class="muted">${esc((c.failed || []).join(", "))}</td></tr>`).join("")}</table>` : ""}
-      ${S.impact_gate && Object.keys(S.impact_gate).length ? `<h3>Explicit-hit gate</h3><table><tr><th>trial</th><th>hit</th><th>verdict</th><th>worse than the reference</th></tr>${Object.entries(S.impact_gate).flatMap(([tr, g]) =>
-        Object.entries(g.cases || {}).map(([c, v]) => `<tr><td>${tr}</td><td>${c}</td><td class="${v.worse?.length ? "bad" : "good"}">${v.error ? "error" : v.worse?.length ? "worse" : "ok"}</td><td class="muted">${esc((v.worse || []).join("; "))}</td></tr>`)).join("")}</table>` : ""}`;
-  }
-  $("overview").innerHTML = html;
-  const hf = r.files.find((f) => f.endsWith("/history.jsonl"));
-  if (hf) drawHistory(hf);
+async function loadPartInto(view, r, i) {
+  const s = r.steps[i];
+  view.loading("Tessellating STEP…");
+  const { part } = await api(`/api/part?step=${encodeURIComponent(s.path)}`, { method: "POST" });
+  const own = s.path.split("/").slice(0, -1).join("/") === r.path;
+  await view.loadPart(part, { title: s.label, mass_g: own && r.headline?.mass_g ? r.headline.mass_g : null });
 }
 
-async function drawHistory(file) {
-  const txt = await (await fetch(`/files/${file}`)).text();
-  const recs = txt.split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((h) => h.mass_kg && h.energy_j);
-  const cv = $("hist"), g = cv.getContext("2d");
-  if (!recs.length) return;
-  const xs = recs.map((h) => h.mass_kg * 1e3), ys = recs.map((h) => h.energy_j);
-  const pad = 44, W = cv.width, H = cv.height;
-  const T = state.run?.targets || {};
-  const mb = T.mass_max_g, re = T.ref_energy_j;
-  const x0 = Math.min(...xs, mb || Infinity) - 1, x1 = Math.max(...xs, mb || -Infinity) + 1;
-  const y0 = Math.min(...ys, re || Infinity) - 2, y1 = Math.max(...ys, re || -Infinity) + 2;
-  const X = (v) => pad + (v - x0) / (x1 - x0 || 1) * (W - 2 * pad), Y = (v) => H - pad - (v - y0) / (y1 - y0 || 1) * (H - 2 * pad);
-  const colors = { global: "#6c8ebf", "repair": "#e8763a", "repair-fd": "#8a5a3a", refine: "#3fb27f", start: "#d9a441" };
-  const draw = (upto) => {
-    g.clearRect(0, 0, W, H);
-    g.strokeStyle = "#2a333e"; g.fillStyle = "#8b97a6"; g.font = "12px system-ui";
-    g.strokeRect(pad, pad, W - 2 * pad, H - 2 * pad);
-    g.fillText(`${x0.toFixed(0)} g`, pad, H - pad + 16); g.fillText(`${x1.toFixed(0)} g`, W - pad - 40, H - pad + 16);
-    g.fillText(`${y0.toFixed(0)} J`, 4, H - pad); g.fillText(`${y1.toFixed(0)} J`, 4, pad + 10);
-    g.setLineDash([5, 4]); g.strokeStyle = "#8b97a6";
-    if (mb) { g.beginPath(); g.moveTo(X(mb), pad); g.lineTo(X(mb), H - pad); g.stroke(); g.fillText(`budget ${mb.toFixed(0)} g`, X(mb) + 4, pad + 12); }
-    if (re) { g.beginPath(); g.moveTo(pad, Y(re)); g.lineTo(W - pad, Y(re)); g.stroke(); g.fillText(`reference ${re.toFixed(0)} J`, W - pad - 120, Y(re) - 4); }
-    g.setLineDash([]);
-    let lx = pad;
-    for (const [name, c] of Object.entries({ global: colors.global, "Newton repair": colors.repair, "repair step (FD)": colors["repair-fd"], "CMA-ES": colors.refine })) {
-      g.fillStyle = c; g.beginPath(); g.arc(lx + 5, H - 12, 4, 0, 2 * Math.PI); g.fill(); g.fillStyle = "#8b97a6"; g.fillText(name, lx + 13, H - 8); lx += g.measureText(name).width + 34;
+async function loadSimInto(view, r, i, opts) {
+  const a = r.anims[i];
+  let dir = a.anim;
+  if (a.source !== "ready") {
+    view.loading("Converting results (first time only)…");
+    dir = (await api(`/api/anim?path=${encodeURIComponent(r.path)}&source=${encodeURIComponent(a.source)}`, { method: "POST" })).anim;
+    a.source = "ready"; a.anim = dir;
+  }
+  view.title = splitLabel(a.label)[0];
+  await view.loadAnim(dir, opts);
+}
+
+// ---------- simulation ----------
+let sim = null, simSel = null, simLoaded = null, pendingFrame = null;
+function ensureSimPane() {
+  if (sim) return;
+  $("simulation").innerHTML = `<div class="cmp-bar"><span class="eyebrow">Simulation</span><span id="simPick"></span><div style="flex:1"></div>
+    <span class="muted" style="font-size:11.5px">drag to orbit · scroll to zoom · hover to probe · space / ← → to step</span></div><div id="simHost" style="flex:1;display:flex;min-height:0"></div>`;
+  simSel = new Select($("simPick"), { width: "460px", minMenu: 460, onChange: (v) => { state.sim = v; simLoaded = null; showSimulation(); } });
+  sim = new SimView($("simHost"), { onFrame: (k) => writeHash({ sim: state.sim, frame: k }) });
+}
+async function showSimulation() {
+  ensureSimPane();
+  const r = state.run;
+  if (!r) return sim.empty("No run selected");
+  simSel.setOptions(r.anims.map((a, i) => ({ value: i, label: splitLabel(a.label || a.source)[0], sub: splitLabel(a.label)[1] })), state.sim);
+  if (!r.anims.length) { simLoaded = null; return sim.empty("This run has no simulations to animate"); }
+  const key = `${r.path}#${state.sim}`;
+  if (simLoaded === key) return;
+  simLoaded = key;
+  try {
+    await loadSimInto(sim, r, state.sim);
+    if (pendingFrame !== null) { sim.seek(pendingFrame); pendingFrame = null; }
+  } catch (e) { simLoaded = null; sim.empty(`Error: ${e.message}`); }
+}
+
+// ---------- part ----------
+let partView = null, partSel = null, partLoaded = null;
+function ensurePartPane() {
+  if (partView) return;
+  $("part").innerHTML = `<div class="cmp-bar"><span class="eyebrow">Part</span><span id="partPick"></span><div style="flex:1"></div>
+    <span class="muted" style="font-size:11.5px">hover a face for its type and area</span><a class="btn" id="stepDl" download>${icon("download")} STEP</a></div><div id="partHost" style="flex:1;display:flex;min-height:0"></div>`;
+  partSel = new Select($("partPick"), { width: "420px", onChange: (v) => { state.step = v; partLoaded = null; showPart(); } });
+  partView = new SimView($("partHost"));
+}
+async function showPart() {
+  ensurePartPane();
+  const r = state.run;
+  if (!r) return partView.empty("No run selected");
+  partSel.setOptions((r.steps || []).map((s, i) => ({ value: i, label: s.label, sub: "STEP" })), state.step);
+  if (!r.steps?.length) { $("stepDl").style.display = "none"; partLoaded = null; return partView.empty("This run has no STEP part"); }
+  $("stepDl").style.display = ""; $("stepDl").href = `/files/${r.steps[state.step].path}`;
+  const key = `${r.path}#${state.step}`;
+  if (partLoaded === key) return;
+  partLoaded = key;
+  try { await loadPartInto(partView, r, state.step); } catch (e) { partLoaded = null; partView.empty(`Error: ${e.message}`); }
+}
+
+// ---------- compare ----------
+let cmp = null;
+function disposeCompare() { if (cmp) { cmp.A.view?.dispose(); cmp.B.view?.dispose(); $("compare").innerHTML = ""; cmp = null; } }
+function viewsOf(r) {
+  return [...(r.steps || []).map((s, i) => ({ value: `part:${i}`, label: `Part · ${s.label}`, group: "Part" })),
+    ...(r.anims || []).map((a, i) => ({ value: `sim:${i}`, label: splitLabel(a.label || a.source)[0], sub: splitLabel(a.label)[1], group: "Simulation" })),
+    ...(r.images || []).map((p) => ({ value: `img:${p}`, label: p.split("/").pop().replace(/\.png$/, "").replace(/_/g, " "), sub: p.split("/runs/").pop().split("/").slice(0, -1).join("/"), group: "Figure" }))];
+}
+async function showCompare() {
+  const r = state.run;
+  if (!r) { $("compare").innerHTML = `<div class="empty">No run selected</div>`; return; }
+  if (cmp && cmp.for === r.path) return;
+  disposeCompare();
+  const pane = $("compare");
+  pane.innerHTML = `<div class="cmp-bar">
+      <div class="cmp-side a"><span class="letter">A</span><span data-c="runA"></span><span data-c="viewA"></span></div>
+      <button class="btn icon" id="cmpSwap" title="Swap A and B">${icon("swap")}</button>
+      <button class="btn on" id="cmpLink" title="Link camera and time">${icon("link")} Linked</button>
+      <div class="cmp-side b" style="justify-content:flex-end"><span data-c="viewB"></span><span data-c="runB"></span><span class="letter">B</span></div></div>
+    <div class="cmp-panes"><div class="cmp-pane" data-p="A"></div><div class="cmp-pane" data-p="B"></div></div>
+    <div class="cmp-bottom"><div class="inner"><div class="card" id="cmpDiff"></div><div class="card" id="cmpRef"></div></div></div>`;
+  const all = await api("/api/catalog");
+  const runOpts = all.map((x) => ({ value: x.path, label: x.depth ? x.name : `${kindLabel(x.kind)} · ${when(x.path.split("/").pop()) || x.name}`, group: x.project, indent: !!x.depth,
+    sub: x.energy_j ? `${fmt(x.energy_j)} J` : x.peak_kn ? `${fmt(x.peak_kn)} kN` : "" }));
+  cmp = { for: r.path, linked: true, A: {}, B: {} };
+  const bPath = r.path, aPath = r.reference?.path || (all.find((x) => x.path !== r.path && x.project === r.project)?.path ?? r.path);
+  for (const side of ["A", "B"]) {
+    const S = cmp[side];
+    S.host = pane.querySelector(`[data-p=${side}]`);
+    S.runSel = new Select(pane.querySelector(`[data-c=run${side}]`), { width: "300px", minMenu: 440, search: true, options: runOpts, value: side === "A" ? aPath : bPath,
+      onChange: (v) => setCompareRun(side, v) });
+    S.viewSel = new Select(pane.querySelector(`[data-c=view${side}]`), { width: "250px", minMenu: 360, onChange: (v) => setCompareView(side, v) });
+  }
+  $("cmpSwap").onclick = () => {
+    const a = cmp.A.runSel.value, av = cmp.A.viewSel.value, b = cmp.B.runSel.value, bv = cmp.B.viewSel.value;
+    cmp.A.runSel.set(b, false); cmp.B.runSel.set(a, false); setCompareRun("A", b, bv); setCompareRun("B", a, av);
+  };
+  $("cmpLink").onclick = (e) => { cmp.linked = !cmp.linked; e.currentTarget.classList.toggle("on", cmp.linked); e.currentTarget.innerHTML = `${icon("link")} ${cmp.linked ? "Linked" : "Unlinked"}`; };
+  await setCompareRun("B", bPath);
+  await setCompareRun("A", aPath);
+}
+function matchingView(v, r) {
+  const opts = viewsOf(r);
+  if (!v) return opts[0]?.value;
+  const kind = v.split(":")[0];
+  if (kind === "img") { const name = v.split("/").pop(); return opts.find((o) => o.value.endsWith("/" + name))?.value || opts[0]?.value; }
+  if (kind === "sim") {
+    const lab = splitLabel(cmp.B.run?.anims[+v.split(":")[1]]?.label)[0];
+    return opts.find((o) => o.value.startsWith("sim:") && o.label === lab)?.value || opts.find((o) => o.value.startsWith("sim:"))?.value || opts[0]?.value;
+  }
+  return opts.find((o) => o.value.startsWith(kind + ":"))?.value || opts[0]?.value;
+}
+async function setCompareRun(side, path, view = null) {
+  const S = cmp[side];
+  S.run = await getRun(path);
+  const opts = viewsOf(S.run);
+  const pref = view || (side === "B" ? (opts.find((o) => o.value.startsWith("part:")) || opts[0])?.value : matchingView(cmp.B.viewSel.value, S.run));
+  S.viewSel.setOptions(opts, pref);
+  renderCompareTables();
+  await setCompareView(side, S.viewSel.value);
+}
+async function setCompareView(side, v) {
+  const S = cmp[side], other = cmp[side === "A" ? "B" : "A"];
+  if (!v) { S.view?.dispose(); S.view = null; S.host.innerHTML = `<div class="empty">nothing to show for this run</div>`; return; }
+  const kind = v.slice(0, v.indexOf(":")), arg = v.slice(v.indexOf(":") + 1);
+  if (kind === "img") { S.view?.dispose(); S.view = null; S.host.innerHTML = `<div class="img-host"><img src="/files/${esc(arg)}"></div>`; return; }
+  if (!S.view) {
+    S.host.innerHTML = "";
+    S.view = new SimView(S.host, { compact: true, onFrame: (k, view) => {
+      if (cmp?.linked && other.view?.m && !S.syncing) { other.syncing = true; other.view.seekTime(view.m.times[k]); other.syncing = false; }
+    } });
+    S.view.stage.controls.addEventListener("change", () => {
+      if (!cmp?.linked || S.syncing || !other.view) return;
+      other.syncing = true;
+      other.view.stage.camera.position.copy(S.view.stage.camera.position);
+      other.view.stage.camera.up.copy(S.view.stage.camera.up);
+      other.view.stage.controls.target.copy(S.view.stage.controls.target);
+      other.view.stage.controls.update();
+      other.syncing = false;
+    });
+  }
+  try {
+    if (kind === "part") await loadPartInto(S.view, S.run, +arg);
+    else await loadSimInto(S.view, S.run, +arg);
+  } catch (e) { S.view.empty(`Error: ${e.message}`); }
+}
+function renderCompareTables() {
+  if (!cmp?.A.run || !cmp?.B.run) return;
+  const A = cmp.A.run, B = cmp.B.run;
+  const vals = (r) => (r.headline && !r.headline.error ? r.headline : r.metrics || null);
+  const a = vals(A), b = vals(B);
+  const list = A.metrics || B.metrics ? HIT_METRICS : METRICS;
+  const rows = a && b ? list.filter(([k]) => typeof a[k] === "number" || typeof b[k] === "number") : [];
+  const nm = (r) => (r._entry?.depth ? r._entry.name : `${r.project} · ${kindLabel(r._entry?.kind || r.name.split("-").pop())}`);
+  $("cmpDiff").innerHTML = `<div class="card-h"><h3>A vs B</h3><div class="right"><span class="muted" style="font-size:11.5px">Δ = B relative to A · green where B is better</span></div></div>
+    <div class="card-b flush">${rows.length ? `<table class="data"><tr><th>Quantity</th><th class="num" style="color:var(--live)">A · ${esc(nm(A))}</th><th class="num" style="color:var(--accent-2)">B · ${esc(nm(B))}</th><th class="num">Δ</th></tr>
+    ${rows.map(([k, label, unit, dir]) => {
+      const x = a[k], y = b[k], d = typeof x === "number" && typeof y === "number" && x ? (y - x) / Math.abs(x) * 100 : null;
+      const cls = d === null || Math.abs(d) < 0.05 || !dir ? "" : (d > 0) === (dir > 0) ? "better" : "worse";
+      return `<tr><td>${label}</td><td class="num">${fmt(x, 4)} <span class="faint">${unit}</span></td><td class="num">${fmt(y, 4)} <span class="faint">${unit}</span></td><td class="num ${cls}">${d === null ? "–" : `${d >= 0 ? "+" : ""}${fmt(d, 3)} %`}</td></tr>`;
+    }).join("")}</table>` : `<div class="empty" style="padding:24px">pick two runs with results to compare numbers</div>`}</div>`;
+  const md = Object.entries(B.markdown || {}).find(([p]) => /compare/.test(p));
+  $("cmpRef").innerHTML = `<div class="card-h"><h3>B against its reference</h3><div class="right"><span class="muted" style="font-size:11.5px">${md ? esc(md[0].split("/").pop()) : ""}</span></div></div>
+    <div class="card-b flush">${md ? mdTables(md[1]) : `<div class="empty" style="padding:24px">no reference comparison in B</div>`}</div>`;
+}
+
+// ---------- spec ----------
+function showSpec() {
+  const el = $("spec");
+  if (!el.dataset.ready) {
+    el.innerHTML = `<div class="page"><div class="hero" style="border:0;padding-bottom:12px"><div><div class="eyebrow">Specification</div><h1 id="specTitle"></h1>
+      <div class="when">units: mm · deg · kg · rpm · m/s · ms — [design] values: a number (fixed) or [min, max] (free)</div></div></div>
+      <div class="toolbar"><button class="btn primary" id="specSave">Save</button><button class="btn" id="specRevert">Revert</button><span class="msg" id="specMsg"></span></div>
+      <div class="editor"><div class="gutter" id="specGutter"></div><div class="code"><pre id="specHl" aria-hidden="true"></pre><textarea id="specText" spellcheck="false"></textarea></div></div></div>`;
+    el.dataset.ready = "1";
+    const ta = $("specText"), gut = $("specGutter"), hl = $("specHl");
+    const lines = () => {
+      gut.textContent = Array.from({ length: ta.value.split("\n").length }, (_, i) => i + 1).join("\n");
+      hl.innerHTML = tomlHighlight(ta.value) + "\n";
+    };
+    ta.oninput = () => { lines(); $("specMsg").innerHTML = `<span class="warn">unsaved changes</span>`; };
+    ta.onscroll = () => { gut.scrollTop = ta.scrollTop; hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; };
+    ta.onkeydown = (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); $("specSave").click(); } };
+    $("specSave").onclick = async () => {
+      const r = await fetch(`/api/spec?name=${encodeURIComponent(state.project)}`, { method: "PUT", body: ta.value }).then((x) => x.json());
+      $("specMsg").innerHTML = r.ok ? `<span class="ok">saved · validated</span>` : `<span class="bad">${esc(r.error)}</span>`;
+      if (r.ok) state.spec = ta.value;
+    };
+    $("specRevert").onclick = () => { ta.value = state.spec; lines(); $("specMsg").textContent = ""; };
+    el._lines = lines;
+  }
+  if ($("specText").dataset.project !== state.project) {
+    $("specText").value = state.spec || ""; $("specText").dataset.project = state.project; el._lines(); $("specMsg").textContent = "";
+  }
+  $("specTitle").textContent = `${state.project} / spec.toml`;
+}
+
+function tomlHighlight(src) {
+  const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);  // keep quotes for the string rule
+  return src.split("\n").map((line) => {
+    const m = /^(\s*)(\[[^\]]*\])(.*)$/.exec(line);
+    let code = line, comment = "";
+    const hash = (() => { let q = false; for (let i = 0; i < line.length; i++) { if (line[i] === '"') q = !q; if (line[i] === "#" && !q) return i; } return -1; })();
+    if (hash >= 0) { code = line.slice(0, hash); comment = line.slice(hash); }
+    if (m && hash !== 0) return `${esc(m[1])}<span class="t-sec">${esc(m[2])}</span>${comment ? `<span class="t-com">${esc(line.slice(m[1].length + m[2].length))}</span>` : esc(m[3])}`;
+    const kv = /^(\s*)([A-Za-z0-9_.-]+)(\s*=\s*)(.*)$/.exec(code);
+    let out = esc(code);
+    if (kv) {
+      const val = esc(kv[4]).replace(/("[^"]*")|(\b-?\d+(?:\.\d+)?(?:e-?\d+)?\b)|(\btrue\b|\bfalse\b)/g, (t, str, num, b) =>
+        str ? `<span class="t-str">${str}</span>` : num ? `<span class="t-num">${num}</span>` : `<span class="t-bool">${b}</span>`);
+      out = `${esc(kv[1])}<span class="t-key">${esc(kv[2])}</span>${esc(kv[3])}${val}`;
     }
-    let best = null;
-    for (let i = 0; i < upto; i++) {
-      const h = recs[i], c = colors[h.phase] || "#6c8ebf";
-      g.beginPath(); g.arc(X(xs[i]), Y(ys[i]), h.ok ? 4 : 3, 0, 2 * Math.PI);
-      if (h.ok) { g.fillStyle = c; g.fill(); if (!best || ys[i] > ys[best]) best = i; } else { g.strokeStyle = c; g.stroke(); }
+    return out + (comment ? `<span class="t-com">${esc(comment)}</span>` : "");
+  }).join("\n");
+}
+
+// ---------- jobs ----------
+const COMMANDS = [["eval", [], "Evaluate", "eval"], ["eval", ["--fine"], "Evaluate · fine mesh", "eval"], ["optimize", [], "Optimize", "optimize"],
+  ["topo", [], "Topology", "topo"], ["impact", ["--case", "all"], "Explicit hit · steel", "impact"],
+  ["impact", ["--case", "bite", "--opponent", "tpu", "--no-ref"], "Explicit hit · TPU wall", "impact"]];
+const runMenu = new Select($("runMenu"), { width: "96px", minMenu: 240, placeholder: "Run",
+  options: COMMANDS.map(([, , label, ic], i) => ({ value: i, label, icon: ic })),
+  onChange: async (i) => {
+    runMenu.set(null, false);
+    if (!state.project || i === null) return;
+    const [cmd, args, label] = COMMANDS[i];
+    const meta = state.projects.find((p) => p.name === state.project) || {};
+    // a design run carries its own spec_fixed.toml: run on that design, else on the project spec
+    const spec = cmd === "topo" ? null : jobTarget();
+    if (!spec && meta.type === "topo" && cmd !== "topo") {
+      toast(`A topology project has no single design: open one of its designs (an eval under a topology run), then run <b>${esc(label)}</b>`, 7000);
+      return;
     }
-    if (best !== null) { g.strokeStyle = "#fff"; g.beginPath(); g.arc(X(xs[best]), Y(ys[best]), 8, 0, 2 * Math.PI); g.stroke(); }
-    g.fillStyle = "#d8dee6"; g.fillText(`${upto} / ${recs.length} designs`, W - pad - 120, pad - 10);
-  };
-  draw(recs.length);
-  $("histPlay").onclick = () => {
-    let k = 0;
-    const step = () => { k = Math.min(recs.length, k + Math.max(1, Math.round(recs.length / 150))); draw(k); if (k < recs.length) requestAnimationFrame(step); };
-    step();
-  };
-}
-
-function worseSummary(d) {
-  // "case: item" entries -> "case (item, item)", one per load case
-  const by = new Map();
-  for (const w of d.worse_than_reference || d.failed || []) {
-    const [g, item] = w.includes(": ") ? w.split(": ") : [w, ""];
-    if (!by.has(g)) by.set(g, []);
-    if (item) by.get(g).push(item.replace(/ \[kN\]$/, ""));
-  }
-  return [...by].map(([g, items]) => items.length ? `${g} (${items.join(", ")})` : g).join("; ");
-}
-
-function mdTables(md) {
-  // markdown tables and headings -> HTML (enough for eitri's compare.md files)
-  const out = [];
-  let rows = [];
-  const flush = () => {
-    if (!rows.length) return;
-    const [head, , ...body] = rows;
-    const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
-    out.push(`<table><tr>${cells(head).map((c) => `<th>${esc(c)}</th>`).join("")}</tr>${body.map((l) =>
-      `<tr>${cells(l).map((c) => `<td class="${c.includes("WORSE") ? "worse" : ""}">${esc(c).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</td>`).join("")}</tr>`).join("")}</table>`);
-    rows = [];
-  };
-  for (const l of md.split("\n")) {
-    if (l.trim().startsWith("|")) { rows.push(l); continue; }
-    flush();
-    if (l.startsWith("#")) out.push(`<h3>${esc(l.replace(/^#+\s*/, ""))}</h3>`);
-    else if (l.trim()) out.push(`<p>${esc(l)}</p>`);
-  }
-  flush();
-  return out.join("");
-}
-
-function renderCompare(r) {
-  let html = "";
-  for (const img of r.images.filter((i) => i.includes("compare_"))) html += `<img class="shot" src="/files/${img}">`;
-  for (const [path, md] of Object.entries(r.markdown)) html += `<div class="muted">${path.split("/").slice(-2).join("/")}</div>` + mdTables(md);
-  $("compare").innerHTML = html || `<p class="muted">no comparison in this run (needs a [reference])</p>`;
-}
-
-// ---------- spec & jobs ----------
-$("save").onclick = async () => {
-  if (!state.project) return;
-  const r = await fetch(`/api/spec?name=${encodeURIComponent(state.project)}`, { method: "PUT", body: $("specText").value }).then((x) => x.json());
-  $("specMsg").innerHTML = r.ok ? `<span class="good">saved</span>` : `<span class="bad">${esc(r.error)}</span>`;
-};
-for (const b of document.querySelectorAll("button[data-cmd]")) {
-  b.onclick = async () => {
-    if (!state.project) return;
-    const args = b.dataset.args ? b.dataset.args.split(" ") : [];
-    const j = await api("/api/job", { method: "POST", body: JSON.stringify({ cmd: b.dataset.cmd, project: state.project, args }) });
+    const j = await api("/api/job", { method: "POST", body: JSON.stringify({ cmd, project: state.project, args, spec }) });
     state.jobSel = j.id;
+    toast(`Started <b>${esc(label)}</b> on ${esc(spec ? spec.split("/runs/").pop() : state.project + " / spec.toml")}`);
     selectTab("jobs");
-  };
+  } });
+runMenu.set(null, false);
+runMenu.root.classList.add("dd-primary");
+
+function jobTarget() {
+  const r = state.run;
+  if (!r) return null;
+  return r.files.find((f) => f === `${r.path}/spec_fixed.toml`) || r.files.find((f) => f === `${r.path}/best/spec_fixed.toml`) || null;
 }
+
+let jobTimer = null;
 async function refreshJobs() {
-  const js = await api("/api/jobs");
-  $("jobList").innerHTML = `<table><tr><th>#</th><th>command</th><th>project</th><th>status</th></tr>${js.map((j) =>
-    `<tr data-id="${j.id}" style="cursor:pointer"><td>${j.id}</td><td>${j.cmd} ${esc(j.args.join(" "))}</td><td>${j.project}</td>
-     <td class="${j.running ? "" : j.returncode === 0 ? "good" : "bad"}">${j.running ? "running…" : "exit " + j.returncode}</td></tr>`).join("")}</table>`;
+  clearTimeout(jobTimer);
+  try {
+    const js = await api("/api/jobs");
+    const running = js.filter((j) => j.running).length;
+    $("jobsBadge").classList.toggle("on", running > 0);
+    $("jobsBadge").innerHTML = running ? `<span class="spinner"></span>${running} running` : "";
+    $("jobsBadge").onclick = () => selectTab("jobs");
+    if (state.tab === "jobs") await renderJobs(js);
+  } finally { jobTimer = setTimeout(refreshJobs, state.tab === "jobs" ? 1500 : 6000); }
+}
+async function renderJobs(js) {
+  const el = $("jobs");
+  if (!el.dataset.ready) {
+    el.innerHTML = `<div class="page"><div class="hero" style="border:0;padding-bottom:12px"><div><div class="eyebrow">Background</div><h1>Jobs</h1>
+      <div class="when">the eitri CLI in detached processes — they keep running across server restarts</div></div></div>
+      <div class="card"><div class="card-b flush" id="jobList"></div></div><div class="section-title"><h2>Log</h2><span class="muted" id="jobWhich"></span></div><pre class="console" id="jobLog">select a job</pre></div>`;
+    el.dataset.ready = "1";
+  }
+  if (!state.jobSel && js.length) state.jobSel = js[0].id;
+  $("jobList").innerHTML = js.length ? `<table class="data"><tr><th>#</th><th>Command</th><th>Project</th><th>Started</th><th>Status</th></tr>${js.map((j) =>
+    `<tr class="click ${j.id === state.jobSel ? "sel" : ""}" data-id="${j.id}"><td class="mono">${j.id}</td><td class="mono">${esc(j.cmd)} ${esc(j.args.join(" "))}</td><td>${esc(j.project)}</td>
+     <td class="mono muted">${new Date(j.started * 1000).toLocaleTimeString()}</td>
+     <td>${j.running ? `<span class="tag live"><span class="spinner"></span> running</span>` : j.returncode === 0 ? `<span class="tag ok">done</span>` : `<span class="tag bad">exit ${j.returncode ?? "?"}</span>`}</td></tr>`).join("")}</table>`
+    : `<div class="empty" style="padding:30px">no jobs yet — start one from the Run menu</div>`;
   for (const tr of $("jobList").querySelectorAll("tr[data-id]")) tr.onclick = () => { state.jobSel = +tr.dataset.id; refreshJobs(); };
   if (state.jobSel) {
     const l = await api(`/api/job?id=${state.jobSel}`);
-    const el = $("jobLog");
-    const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
-    el.textContent = l.log;
-    if (atEnd) el.scrollTop = el.scrollHeight;
-  }
-  clearTimeout(state.jobTimer);
-  if (document.querySelector('.tab.sel').dataset.pane === "jobs") state.jobTimer = setTimeout(refreshJobs, 1500);
-}
-
-// ---------- viewer ----------
-const COLORMAP = [[0.0, [0.05, 0.03, 0.2]], [0.25, [0.35, 0.05, 0.5]], [0.5, [0.8, 0.2, 0.3]], [0.75, [0.98, 0.55, 0.1]], [1.0, [0.99, 0.95, 0.55]]];
-const OVER = [0.0, 0.76, 1.0]; // above the max: cyan, like the static PNGs ("past yield")
-function cmap(t, out, i) {
-  if (t > 1.0001) { out[i] = OVER[0]; out[i + 1] = OVER[1]; out[i + 2] = OVER[2]; return; }
-  t = Math.max(0, Math.min(1, t));
-  for (let k = 1; k < COLORMAP.length; k++) {
-    if (t <= COLORMAP[k][0]) {
-      const [t0, c0] = COLORMAP[k - 1], [t1, c1] = COLORMAP[k];
-      const f = (t - t0) / (t1 - t0);
-      out[i] = c0[0] + f * (c1[0] - c0[0]); out[i + 1] = c0[1] + f * (c1[1] - c0[1]); out[i + 2] = c0[2] + f * (c1[2] - c0[2]);
-      return;
-    }
+    const el2 = $("jobLog"), atEnd = el2.scrollTop + el2.clientHeight >= el2.scrollHeight - 30;
+    el2.textContent = l.log || "(no output yet)";
+    $("jobWhich").textContent = `job ${state.jobSel}`;
+    if (atEnd) el2.scrollTop = el2.scrollHeight;
   }
 }
 
-const viewer = {
-  init() {
-    this.wrap = $("canvasWrap");
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setPixelRatio(window.devicePixelRatio);
-    this.renderer.setClearColor(0x0f1216);
-    this.wrap.appendChild(this.renderer.domElement);
-    this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(35, 1, 0.1, 10000);
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    const d = new THREE.DirectionalLight(0xffffff, 0.9); d.position.set(1, 2, 3); this.scene.add(d);
-    const d2 = new THREE.DirectionalLight(0xffffff, 0.35); d2.position.set(-2, -1, -1); this.scene.add(d2);
-    window.addEventListener("resize", () => this.resize());
-    const loop = () => { requestAnimationFrame(loop); this.tick(); this.renderer.render(this.scene, this.camera); };
-    loop();
-  },
-  clear(msg = "no animation loaded") {
-    if (this.obj) { this.scene.remove(this.obj); this.obj.geometry.dispose(); this.obj = null; }
-    this.m = null; this.playing = false; $("play").textContent = "▶";
-    $("time").max = 0; $("time").value = 0; $("tlabel").textContent = "–";
-    $("legend").style.display = "none";
-    $("status").textContent = msg;
-  },
-  resize() {
-    const w = this.wrap.clientWidth, h = this.wrap.clientHeight;
-    if (!w || !h) return;
-    this.renderer.setSize(w, h);
-    this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
-  },
-  async load(dir) {
-    $("status").textContent = "loading…";
-    const m = await api(`/files/${dir}/manifest.json`);
-    // no ".bin" in URLs and a text content type: download managers must not grab these (see server.py)
-    const data = async (part) => (await fetch(`/api/data?dir=${encodeURIComponent(dir)}&part=${part}`)).arrayBuffer();
-    const mesh = await data("mesh");
-    const frames = await data("frames");
-    const vis = m.has_vis ? new Uint8Array(await data("vis")) : null;
-    const n = m.n_nodes, nt = m.n_tris;
-    this.m = m;
-    this.base = new Float32Array(mesh, 0, n * 3);
-    this.tris = new Uint32Array(mesh, n * 12, nt * 3);
-    this.frames = new Float32Array(frames);
-    this.vis = vis;
-    this.stride = (m.has_disp ? n * 3 : 0) + m.fields.length * n;
-    if (this.obj) { this.scene.remove(this.obj); this.obj.geometry.dispose(); }
-    const g = new THREE.BufferGeometry();
-    this.pos = new Float32Array(n * 3); this.pos.set(this.base);
-    this.col = new Float32Array(n * 3);
-    g.setAttribute("position", new THREE.BufferAttribute(this.pos, 3));
-    g.setAttribute("color", new THREE.BufferAttribute(this.col, 3));
-    g.setIndex(new THREE.BufferAttribute(new Uint32Array(this.tris), 1));
-    const flat = m.kind !== "explicit";
-    const mat = flat ? new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })
-      : new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
-    this.obj = new THREE.Mesh(g, mat);
-    this.scene.add(this.obj);
-    g.computeBoundingSphere();
-    const c = g.boundingSphere.center, r = g.boundingSphere.radius;
-    this.controls.target.copy(c);
-    const dist = r / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2)) * 1.08;  // whole part in view
-    this.camera.position.set(c.x, c.y - (flat ? 0 : dist * 0.55), c.z + dist * (flat ? 1 : 0.85));
-    this.camera.up.set(0, flat ? 1 : 0, flat ? 0 : 1);
-    this.camera.near = r / 100; this.camera.far = r * 100; this.camera.updateProjectionMatrix();
-    this.controls.update();
-    $("field").innerHTML = m.fields.map((f, i) => `<option value="${i}" ${f.name === m.default_field ? "selected" : ""}>${f.name}</option>`).join("");
-    $("scale").value = m.disp_scale_default || 1;
-    $("vmax").value = "";
-    $("time").max = m.times.length - 1; $("time").value = 0;
-    this.k = 0; this.playing = false; $("play").textContent = "▶";
-    this.show(0);
-    $("status").textContent = m.title;
-  },
-  show(k) {
-    if (!this.m) return;
-    const m = this.m, n = m.n_nodes;
-    this.k = k;
-    const off = k * this.stride;
-    const sc = +$("scale").value || 0;
-    if (m.has_disp) for (let i = 0; i < n * 3; i++) this.pos[i] = this.base[i] + sc * this.frames[off + i];
-    const fi = +$("field").value || 0, f = m.fields[fi];
-    const foff = off + (m.has_disp ? n * 3 : 0) + fi * n;
-    const lo = f.name === "of yield" ? 0 : Math.max(0, f.min);
-    let hi = parseFloat($("vmax").value);
-    if (!(hi > lo)) hi = f.name === "of yield" ? 1.0 : (f.name === "plastic strain" ? Math.min(f.max, 0.15) : f.max);
-    // plastic strain: material that hasn't yielded is plain steel grey, so only the yielded zones carry color
-    const elastic = f.name === "plastic strain" ? 0.002 : -Infinity;
-    for (let i = 0; i < n; i++) {
-      const v = this.frames[foff + i];
-      if (v < elastic) { this.col[i * 3] = 0.62; this.col[i * 3 + 1] = 0.65; this.col[i * 3 + 2] = 0.69; continue; }
-      cmap((v - lo) / (hi - lo || 1), this.col, i * 3);
-    }
-    if (this.vis) {
-      const v = this.vis.subarray(k * m.n_tris, (k + 1) * m.n_tris);
-      const idx = [];
-      for (let t = 0; t < m.n_tris; t++) if (v[t]) idx.push(this.tris[3 * t], this.tris[3 * t + 1], this.tris[3 * t + 2]);
-      this.obj.geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(idx), 1));
-    }
-    this.obj.geometry.attributes.position.needsUpdate = true;
-    this.obj.geometry.attributes.color.needsUpdate = true;
-    if (m.kind === "explicit") this.obj.geometry.computeVertexNormals();
-    $("tlabel").textContent = `${fmt(m.times[k], 4)} ${m.time_unit}`;
-    const grad = COLORMAP.map(([t, c]) => `rgb(${c.map((x) => Math.round(x * 255)).join(",")}) ${t * 100}%`).join(",");
-    $("legend").style.display = "block";
-    $("legend").innerHTML = `<div>${f.name} ${f.unit !== "-" ? "[" + f.unit + "]" : ""}</div><div class="bar" style="background:linear-gradient(90deg,${grad})"></div>
-      <div class="ends"><span>${fmt(lo)}</span><span>${fmt(hi)}</span></div><div class="muted">cyan: above max${f.name === "plastic strain" ? " · grey: not yielded" : ""}</div>`;
-  },
-  tick() {
-    if (!this.playing || !this.m) return;
-    const now = performance.now();
-    if (now - (this.last || 0) < 1000 / (+$("fps").value || 12)) return;
-    this.last = now;
-    const k = (this.k + 1) % this.m.times.length;
-    $("time").value = k;
-    this.show(k);
-  },
-};
-viewer.init();
-$("time").oninput = () => viewer.show(+$("time").value);
-$("field").onchange = $("scale").onchange = $("vmax").onchange = () => viewer.show(viewer.k);
-$("play").onclick = () => { viewer.playing = !viewer.playing; $("play").textContent = viewer.playing ? "❚❚" : "▶"; };
-$("animSel").onchange = async () => {
-  const a = $("animSel").value === "" ? null : state.run?.anims[+$("animSel").value];
-  if (!a) return;
-  try {
-    let dir = a.anim;
-    if (a.source !== "ready") {
-      $("status").textContent = "converting (first time only)…";
-      dir = (await api(`/api/anim?path=${encodeURIComponent(state.run.path)}&source=${encodeURIComponent(a.source)}`, { method: "POST" })).anim;
-    }
-    await viewer.load(dir);
-  } catch (e) { console.error("anim load failed", e.stack); $("status").textContent = "error: " + e.message; }
-};
-
-// ---------- deep links: #project=..&run=..&tab=..&anim=.. ----------
-function setHash(extra = {}) {
-  const h = new URLSearchParams(location.hash.slice(1));
-  if (state.project) h.set("project", state.project);
-  if (state.run) h.set("run", state.run.path); else h.delete("run");
-  if (h.get("run") !== state.hashRun) { h.delete("anim"); h.delete("frame"); }  // they belong to the old run
-  state.hashRun = h.get("run");
-  for (const [k, v] of Object.entries(extra)) h.set(k, v);
-  history.replaceState(null, "", "#" + h.toString());
+// ---------- live: hot reload + new data ----------
+let boot = null, dataTimer = null;
+function connectEvents() {
+  const es = new EventSource("/api/events");
+  es.addEventListener("hello", (e) => {
+    const b = JSON.parse(e.data).boot;
+    $("live").classList.add("on");
+    if (boot && b !== boot) { location.reload(); return; }  // the server restarted with new code
+    boot = b;
+  });
+  es.addEventListener("static", (e) => {
+    const files = JSON.parse(e.data).files;
+    if (files.every((f) => f.endsWith(".css"))) $("css").href = `/static/styles.css?v=${Date.now()}`;
+    else location.reload();
+  });
+  es.addEventListener("data", (e) => {
+    const names = JSON.parse(e.data).projects;
+    clearTimeout(dataTimer);
+    dataTimer = setTimeout(() => onData(names), 600);
+  });
+  es.onerror = () => $("live").classList.remove("on");
 }
-async function fromHash() {
-  const h = new URLSearchParams(location.hash.slice(1));
-  state.hashRun = h.get("run");
-  state.restoring = true;
-  if (h.get("project")) await openProject(h.get("project"));
-  if (h.get("run")) await openRun(h.get("run"));
-  else if (state.runs?.length) await openRun(state.runs[0].path);  // the latest run
-  if (h.get("tab")) selectTab(h.get("tab"));
-  if (h.get("anim") !== null && h.get("anim") !== "") {
-    $("animSel").value = h.get("anim");
-    await $("animSel").onchange();
-    if (h.get("frame")) { $("time").value = h.get("frame"); viewer.show(+h.get("frame")); }
+async function onData(names) {
+  const before = new Set(state.runs.map((r) => r.path));
+  await loadProjects();
+  if (!names.includes(state.project)) return;
+  await openProject(state.project, { keepRun: true });
+  const added = state.runs.filter((r) => !before.has(r.path));
+  if (added.length) toast(`New in <b>${esc(state.project)}</b>: ${added.map((r) => esc(runLabel(r).name)).slice(0, 3).join(", ")}`);
+  if (state.run) {
+    const old = state.run;
+    const r = await getRun(old.path, true);
+    if (JSON.stringify([r.files, r.anims.length, r.headline]) !== JSON.stringify([old.files, old.anims.length, old.headline])) {
+      state.run = r;
+      renderOverview();
+      if (state.tab === "simulation" && !sim?.m) showSimulation();
+    }
   }
-  state.restoring = false;
 }
-for (const t of document.querySelectorAll(".tab")) t.addEventListener("click", () => setHash({ tab: t.dataset.pane }));
 
-loadProjects().then(fromHash);
+// ---------- boot ----------
+(async () => {
+  const H = readHash();
+  await loadProjects();
+  const name = H.project && state.projects.some((p) => p.name === H.project) ? H.project : state.projects[0]?.name;
+  if (name) {
+    await openProject(name);
+    if (H.run && state.runs.some((r) => r.path === H.run) && H.run !== state.run?.path) await openRun(H.run);
+    if (H.sim) state.sim = +H.sim;
+    if (H.frame) pendingFrame = +H.frame;
+  }
+  selectTab(TABS.some(([t]) => t === H.tab) ? H.tab : "overview");
+  connectEvents();
+  refreshJobs();
+})();

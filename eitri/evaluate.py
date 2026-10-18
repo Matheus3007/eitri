@@ -26,6 +26,9 @@ def single_tooth_bite_mm(spec: Spec) -> float:
 
 
 def build_weapon(spec: Spec, design: dict[str, float]) -> Weapon:
+    if spec.weapon.type == "topo" and not design.get("pockets"):
+        raise ValueError("a topology project has no single design: run `eitri topo` on it, then evaluate one of "
+                         "its designs (runs/<topo run>/moi*/eval/spec_fixed.toml)")
     if spec.weapon.type == "hook" and not design.get("envelope_bite_mm"):
         design = {**design, "envelope_bite_mm": single_tooth_bite_mm(spec)}  # the outline follows the bite
     if spec.machining is not None and spec.machining.any():

@@ -4,115 +4,49 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Eitri</title>
-<style>
-  :root {
-    --bg: #0f1216; --panel: #161b22; --panel2: #1c232c; --line: #2a333e; --text: #d8dee6; --muted: #8b97a6;
-    --accent: #e8763a; --ok: #3fb27f; --bad: #e5534b; --warn: #d9a441;
-    font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 14px;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
-  header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
-  header h1 { font-size: 16px; margin: 0; letter-spacing: .08em; }
-  header h1 span { color: var(--accent); }
-  header .crumb { color: var(--muted); }
-  main { flex: 1; display: flex; min-height: 0; }
-  nav { width: 300px; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
-  #projects { max-height: 34vh; overflow: auto; border-bottom: 1px solid var(--line); }
-  #runs { flex: 1; overflow: auto; }
-  .item.child { padding-left: 30px; font-size: 13px; }
-  .item.child::before { content: "↳ "; color: var(--muted); }
-  nav h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: 14px 14px 6px; }
-  .item { padding: 7px 14px; cursor: pointer; border-left: 3px solid transparent; }
-  .item:hover { background: var(--panel2); }
-  .item.sel { border-left-color: var(--accent); background: var(--panel2); }
-  .item small { display: block; color: var(--muted); font-size: 12px; }
-  .pill { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 8px; margin-left: 6px; }
-  .pill.ok { background: #1f3a2e; color: var(--ok); } .pill.bad { background: #3d1f1f; color: var(--bad); }
-  section#content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  .tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
-  .tab { padding: 9px 14px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; }
-  .tab.sel { color: var(--text); border-bottom-color: var(--accent); }
-  .pane { flex: 1; overflow: auto; padding: 16px; display: none; }
-  .pane.sel { display: block; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
-  .card .v { font-size: 20px; font-weight: 600; } .card .k { color: var(--muted); font-size: 12px; }
-  table { border-collapse: collapse; width: 100%; margin: 8px 0 18px; }
-  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
-  th { color: var(--muted); font-weight: 500; white-space: nowrap; }
-  td.num { white-space: nowrap; }
-  td.worse, .bad { color: var(--bad); font-weight: 600; } .good { color: var(--ok); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 14px; }
-  figure { margin: 0; } figcaption { font-size: 12px; margin-bottom: 4px; }
-  img.shot { max-width: 100%; border-radius: 6px; border: 1px solid var(--line); margin: 6px 0 14px; background: #fff; }
-  #viewer { position: relative; height: 100%; display: none; }
-  #viewer.sel { display: flex; flex-direction: column; padding: 0; }
-  #canvasWrap { flex: 1; position: relative; min-height: 0; }
-  #canvasWrap canvas { display: block; }
-  .controls { display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-top: 1px solid var(--line); }
-  .controls label { color: var(--muted); font-size: 12px; }
-  select, input, button, textarea { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; }
-  button { cursor: pointer; } button.primary { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 600; }
-  input[type=range] { flex: 1; min-width: 120px; padding: 0; }
-  #legend { position: absolute; right: 14px; top: 14px; background: rgba(22,27,34,.9); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
-  #legend .bar { width: 160px; height: 10px; border-radius: 3px; margin: 4px 0; }
-  #legend .ends { display: flex; justify-content: space-between; color: var(--muted); }
-  #status { position: absolute; left: 14px; top: 14px; color: var(--muted); font-size: 12px; background: rgba(22,27,34,.85); padding: 6px 9px; border-radius: 6px; }
-  textarea#specText { width: 100%; height: 60vh; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
-  pre.log { background: #0b0e12; border: 1px solid var(--line); border-radius: 6px; padding: 10px; white-space: pre-wrap; max-height: 60vh; overflow: auto; font-size: 12px; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
-  .muted { color: var(--muted); }
-</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" id="css" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 29 9.5v13L16 30 3 22.5v-13z' fill='%23ff5b1f'/%3E%3C/svg%3E">
 <script type="importmap">
   {"imports": {"three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
 </script>
 </head>
 <body>
-<header><h1>EI<span>T</span>RI</h1><span class="crumb" id="crumb">spinner weapon design suite</span></header>
-<main>
-  <nav>
-    <h2>Projects</h2><div id="projects"></div>
-    <h2>Runs</h2><div id="runs"><div class="item muted">pick a project</div></div>
-  </nav>
-  <section id="content">
-    <div class="tabs" id="tabs">
-      <div class="tab sel" data-pane="overview">Overview</div>
-      <div class="tab" data-pane="compare">Compare</div>
-      <div class="tab" data-pane="viewer">Viewer</div>
-      <div class="tab" data-pane="spec">Spec</div>
-      <div class="tab" data-pane="jobs">Jobs</div>
-    </div>
-    <div class="pane sel" id="overview"><p class="muted">Pick a project and a run on the left.</p></div>
-    <div class="pane" id="compare"></div>
-    <div class="pane" id="viewer">
-      <div id="canvasWrap"><div id="status">no animation loaded</div><div id="legend" style="display:none"></div></div>
-      <div class="controls">
-        <select id="animSel" style="max-width:260px"><option value="">animation…</option></select>
-        <button id="play">▶</button>
-        <input type="range" id="time" min="0" max="0" value="0">
-        <span id="tlabel" class="muted">–</span>
-        <label>field</label><select id="field"></select>
-        <label>× deform</label><input id="scale" type="number" value="1" step="1" style="width:70px">
-        <label>max</label><input id="vmax" type="number" step="any" style="width:90px" placeholder="auto">
-        <label>fps</label><input id="fps" type="number" value="12" style="width:60px">
-      </div>
-    </div>
-    <div class="pane" id="spec">
-      <div class="row">
-        <button class="primary" id="save">Save</button>
-        <button data-cmd="eval">Evaluate</button><button data-cmd="eval" data-args="--fine">Evaluate (fine)</button>
-        <button data-cmd="optimize">Optimize</button><button data-cmd="topo">Topology</button>
-        <button data-cmd="impact" data-args="--case all">Explicit hit (steel)</button>
-        <button data-cmd="impact" data-args="--case bite --opponent tpu --no-ref">Explicit hit (TPU)</button>
-        <span id="specMsg" class="muted"></span>
-      </div>
-      <textarea id="specText" spellcheck="false"></textarea>
-    </div>
-    <div class="pane" id="jobs"><div id="jobList"></div><pre class="log" id="jobLog">select a job</pre></div>
-  </section>
-</main>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 32 32"><path d="M16 2 29 9.5v13L16 30 3 22.5v-13z" fill="none" stroke="#ff5b1f" stroke-width="2"/><path d="M11 10h10M11 16h7M11 22h10M11 10v12" stroke="#eceff3" stroke-width="2.2" stroke-linecap="round"/></svg>
+    <span class="word">EI<b>T</b>RI</span>
+    <span class="sub">Combat robot design suite</span>
+  </div>
+  <div class="crumbs">
+    <div id="projectDD"></div>
+  </div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="top-right">
+    <span class="jobs-badge" id="jobsBadge"></span>
+    <span class="live" id="live" title="live: runs and code changes appear on their own"><span class="dot"></span>LIVE</span>
+    <div class="menu-wrap" id="runMenu"></div>
+  </div>
+</header>
+<div class="body">
+  <aside class="sidebar">
+    <div class="side-head" id="sideHead"></div>
+    <div class="runs" id="runs"></div>
+  </aside>
+  <main class="main">
+    <section class="pane sel" id="overview"></section>
+    <section class="pane full" id="compare"></section>
+    <section class="pane full" id="simulation"></section>
+    <section class="pane full" id="part"></section>
+    <section class="pane" id="spec"></section>
+    <section class="pane" id="jobs"></section>
+  </main>
+</div>
+<div class="lightbox" id="lightbox"><img alt=""></div>
+<div class="toasts" id="toasts"></div>
 <script type="module" src="/static/app.js"></script>
 </body>
 </html>

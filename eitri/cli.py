@@ -523,12 +523,19 @@ def impact_cmd(
 
 
 @app.command("ui")
-def ui_cmd(port: int = typer.Option(8765), host: str = typer.Option("127.0.0.1")):
-    """Local web app: browse projects and runs, compare with the reference, animate every simulation (static
-    FEA load ramp, explicit hits, topology iterations), edit specs and launch eval/optimize/topo/impact."""
-    from eitri.ui.server import serve
+def ui_cmd(port: int = typer.Option(8765), host: str = typer.Option("127.0.0.1"),
+           reload: bool = typer.Option(True, help="restart on code changes; the page follows (hot reload)")):
+    """Local web app: browse projects and runs, compare any two, animate every simulation (static FEA load
+    ramp, explicit hits, topology iterations), view the STEP part, edit specs and launch jobs. Runs appear
+    live as they are written."""
+    if reload:
+        from eitri.ui.dev import run
 
-    serve(host, port)
+        run(host, port)
+    else:
+        from eitri.ui.server import serve
+
+        serve(host, port)
 
 
 @app.command("faces")
